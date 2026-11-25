@@ -2,13 +2,12 @@ pub use crate::hotkey_machine::{
     apply_event, matches_modifier, HotkeySettings, MachineState, TriggerModifier,
 };
 
-use rdev::{listen, Event};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
 };
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 #[derive(Debug, Clone, Default)]
 pub struct ListenerHealth {
@@ -77,78 +76,119 @@ pub fn spawn_hotkey_listener<F>(
 ) where
     F: Fn(f64, f64) + Send + Sync + 'static,
 {
-    let on_trigger = Arc::new(on_trigger);
-    thread::spawn(move || {
-        // Retry when the event tap cannot be created (usually missing Accessibility).
-        // A successful listen() blocks in the platform run loop until process exit.
-        while running.load(Ordering::Relaxed) {
-            let trusted = check_accessibility_permission(false);
-            if let Ok(mut h) = health.lock() {
-                h.accessibility_trusted = trusted;
-                h.running = false;
-            }
-
-            if !trusted {
+    let on_trigger: Arc<dyn Fn(f64, f64) + Send + Sync> = Arc::new(on_trigger);
+    let _ = thread::Builder::new()
+        .name("keyring-hotkey-listener".into())
+        .spawn(move || {
+            // Retry when the event tap cannot be created (usually missing Accessibility).
+            // A successful listen blocks in a background CFRunLoop / rdev loop, never the
+            // Tauri / AppKit main thread.
+            while running.load(Ordering::Relaxed) {
+                let trusted = check_accessibility_permission(false);
                 if let Ok(mut h) = health.lock() {
-                    h.last_error = Some(
-                        "系统尚未授权键盘监听。请在「系统设置 > 隐私与安全性 > 辅助功能」中打开 KeyRing，然后返回应用。"
-                            .into(),
-                    );
+                    h.accessibility_trusted = trusted;
+                    h.running = false;
                 }
-                thread::sleep(Duration::from_secs(2));
-                continue;
-            }
 
-            let machine = Arc::new(Mutex::new(MachineState::default()));
-            let settings = Arc::clone(&settings);
-            let running_flag = Arc::clone(&running);
-            let on_trigger = Arc::clone(&on_trigger);
-
-            let callback = {
-                let machine = Arc::clone(&machine);
-                move |event: Event| {
-                    if !running_flag.load(Ordering::Relaxed) {
-                        return;
-                    }
-                    let cfg = match settings.lock() {
-                        Ok(guard) => guard.clone(),
-                        Err(_) => return,
-                    };
-                    let mut state = match machine.lock() {
-                        Ok(guard) => guard,
-                        Err(_) => return,
-                    };
-                    if let Some((x, y)) = apply_event(&mut state, event.event_type, &cfg, Instant::now())
-                    {
-                        drop(state);
-                        on_trigger(x, y);
-                    }
-                }
-            };
-
-            if let Ok(mut h) = health.lock() {
-                h.running = true;
-                h.last_error = None;
-                h.accessibility_trusted = true;
-            }
-
-            match listen(callback) {
-                Ok(()) => {
+                if !trusted {
                     if let Ok(mut h) = health.lock() {
-                        h.running = false;
-                    }
-                    break;
-                }
-                Err(err) => {
-                    if let Ok(mut h) = health.lock() {
-                        h.running = false;
-                        h.last_error = Some(format!(
-                            "全局键盘监听未能启动（{err:?}）。请确认已在「辅助功能」中授权 KeyRing，授权后应用会自动重试。"
-                        ));
+                        h.last_error = Some(
+                            "系统尚未授权键盘监听。请在「系统设置 > 隐私与安全性 > 辅助功能」中打开 KeyRing，然后返回应用。"
+                                .into(),
+                        );
                     }
                     thread::sleep(Duration::from_secs(2));
+                    continue;
+                }
+
+                if let Ok(mut h) = health.lock() {
+                    h.running = true;
+                    h.last_error = None;
+                    h.accessibility_trusted = true;
+                }
+
+                match run_platform_listener(
+                    Arc::clone(&settings),
+                    Arc::clone(&running),
+                    Arc::clone(&on_trigger),
+                ) {
+                    Ok(()) => {
+                        if let Ok(mut h) = health.lock() {
+                            h.running = false;
+                        }
+                        if !running.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        // Tap ended without a process exit (for example, permission was
+                        // revoked mid-run). Retry instead of leaving the listener dead.
+                        thread::sleep(Duration::from_secs(2));
+                    }
+                    Err(err) => {
+                        if let Ok(mut h) = health.lock() {
+                            h.running = false;
+                            h.last_error = Some(format!(
+                                "全局键盘监听未能启动（{err}）。请确认已在「辅助功能」中授权 KeyRing，授权后应用会自动重试。"
+                            ));
+                        }
+                        thread::sleep(Duration::from_secs(2));
+                    }
                 }
             }
+        });
+}
+
+#[cfg(target_os = "macos")]
+fn run_platform_listener(
+    settings: Arc<Mutex<HotkeySettings>>,
+    running: Arc<AtomicBool>,
+    on_trigger: Arc<dyn Fn(f64, f64) + Send + Sync>,
+) -> Result<(), String> {
+    crate::macos_listen::listen_physical_events(settings, running, move |x, y| on_trigger(x, y))
+        .map_err(|err| err.to_string())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn run_platform_listener(
+    settings: Arc<Mutex<HotkeySettings>>,
+    running: Arc<AtomicBool>,
+    on_trigger: Arc<dyn Fn(f64, f64) + Send + Sync>,
+) -> Result<(), String> {
+    use crate::input_event::from_rdev;
+    use rdev::{listen, Event};
+    use std::sync::mpsc;
+    use std::time::Instant;
+
+    let (tx, rx) = mpsc::sync_channel::<(f64, f64)>(1);
+    let worker = Arc::clone(&on_trigger);
+    let _ = thread::Builder::new()
+        .name("keyring-hotkey-trigger".into())
+        .spawn(move || {
+            while let Ok((x, y)) = rx.recv() {
+                worker(x, y);
+            }
+        });
+
+    let machine = Mutex::new(MachineState::default());
+    let callback = move |event: Event| {
+        if !running.load(Ordering::Relaxed) {
+            return;
         }
-    });
+        let Some(input) = from_rdev(event.event_type) else {
+            return;
+        };
+        let cfg = match settings.lock() {
+            Ok(guard) => guard.clone(),
+            Err(_) => return,
+        };
+        let mut state = match machine.lock() {
+            Ok(guard) => guard,
+            Err(_) => return,
+        };
+        if let Some(coords) = apply_event(&mut state, input, &cfg, Instant::now()) {
+            drop(state);
+            let _ = tx.try_send(coords);
+        }
+    };
+
+    listen(callback).map_err(|err| format!("{err:?}"))
 }

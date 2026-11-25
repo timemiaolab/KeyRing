@@ -4,6 +4,10 @@ pub mod executor;
 pub mod finder_ax;
 pub mod hotkey;
 pub mod hotkey_machine;
+pub mod input_event;
+pub mod macos_event;
+#[cfg(target_os = "macos")]
+pub mod macos_listen;
 pub mod icon;
 pub mod layout;
 pub mod paths;
