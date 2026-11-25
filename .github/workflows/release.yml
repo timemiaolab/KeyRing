@@ -83,7 +83,7 @@ jobs:
           tagName: v__VERSION__
           releaseName: KeyRing v__VERSION__
           releaseBody: |
-            KeyRing 0.1.1 desktop installers.
+            KeyRing v__VERSION__ desktop installers.
 
             Builds are **unsigned** (no Apple Developer or Windows code-signing certificate).
             macOS uses ad-hoc signing; Gatekeeper may still warn on first open.
