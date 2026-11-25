@@ -104,6 +104,26 @@ pub fn setup_tray(app: &AppHandle, locale: &str, autostart: bool) -> tauri::Resu
                     let _ = win.set_focus();
                 }
             }
+            "tray_pause" => {
+                let state = app.state::<crate::AppStates>();
+                let paused = if let Ok(mut hk) = state.hotkey_settings.lock() {
+                    hk.paused = !hk.paused;
+                    hk.paused
+                } else {
+                    false
+                };
+                let language = state
+                    .config
+                    .lock()
+                    .map(|c| c.language.clone())
+                    .unwrap_or_else(|_| "zh-CN".into());
+                let autostart = state.config.lock().map(|c| c.autostart).unwrap_or(true);
+                if let Some(tray) = app.tray_by_id("keyring-tray") {
+                    if let Ok(menu) = build_tray_menu(app, &language, autostart, paused) {
+                        let _ = tray.set_menu(Some(menu));
+                    }
+                }
+            }
             "tray_quit" => {
                 app.exit(0);
             }
