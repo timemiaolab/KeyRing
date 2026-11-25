@@ -82,6 +82,8 @@ jobs:
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2.9.3
@@ -94,8 +96,21 @@ jobs:
       - name: Frontend build
         run: npm run build
 
-      - name: Rust check and test
+      - name: Rust check and test (host Apple Silicon)
         run: |
           cargo check --manifest-path src-tauri/Cargo.toml --all-targets
+          cargo build --manifest-path src-tauri/Cargo.toml --lib
           cargo test --manifest-path src-tauri/Cargo.toml --all-targets
+
+      - name: Rust check and lib build (Intel x86_64)
+        run: |
+          cargo check --manifest-path src-tauri/Cargo.toml --all-targets --target x86_64-apple-darwin
+          cargo build --manifest-path src-tauri/Cargo.toml --lib --target x86_64-apple-darwin
+          cargo build --manifest-path src-tauri/Cargo.toml --lib --target aarch64-apple-darwin
+
+      - name: Assert mac binaries do not link rdev TIS translation
+        run: |
+          python3 scripts/assert_macos_binary_has_no_rdev_tis.py \
+            src-tauri/target/aarch64-apple-darwin/debug/libkeyring_lib.dylib \
+            src-tauri/target/x86_64-apple-darwin/debug/libkeyring_lib.dylib
 
