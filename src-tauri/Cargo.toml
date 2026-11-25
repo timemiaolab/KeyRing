@@ -45,7 +45,8 @@ zbus = "4.4"
 urlencoding = "2.1"
 
 # rdev is used on Windows and Linux only. macOS uses a physical CGEventTap
-# (macos_listen.rs) so the binary cannot link rdev::string_from_code / TIS.
+# (macos_listen.rs) so the mac binary cannot link that crate's input-source
+# character translation APIs.
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 rdev = "0.5"
 

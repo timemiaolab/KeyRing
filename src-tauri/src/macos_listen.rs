@@ -1,9 +1,10 @@
 //! Background, listen-only CGEventTap for physical modifier keys.
 //!
-//! This deliberately does not use rdev. rdev 0.5.3's macOS `raw_callback`
-//! calls `Keyboard::string_from_code` (TIS/HIToolbox) *before* invoking the
-//! user callback, which aborts on a dispatch queue assertion when run off
-//! the main thread. Double-Command does not need character translation.
+//! This deliberately does not use the previous cross-platform input crate on
+//! macOS. That crate translated key events through the Text Input Source /
+//! Carbon input-source APIs *before* invoking the user callback, which aborts
+//! on a dispatch queue assertion when run off the main thread. Double-Command
+//! does not need character translation.
 //!
 //! The tap is ListenOnly and always returns the original event, so we never
 //! swallow input. The callback must not panic or block: decoded events are
