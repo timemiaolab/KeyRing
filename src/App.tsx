@@ -523,6 +523,14 @@ export default function App() {
             config={config}
             t={t}
             contextState={contextState}
+            triggerPhase={phase}
+            lastEventNote={lastEventNote}
+            onChangeModifier={(modifier) =>
+              setConfig((prev) => ({
+                ...prev,
+                trigger: { ...prev.trigger, modifier },
+              }))
+            }
             onToggleEntry={handleToggleSandboxEntry}
             onClearSelection={() => setSelectedEntries([])}
             onTriggerAtCenter={triggerCenterPopup}

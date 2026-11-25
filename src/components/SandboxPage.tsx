@@ -8,11 +8,15 @@ import {
 } from '../types/keyring';
 import { TranslationDict } from '../i18n/translations';
 import { SANDBOX_ENTRIES } from '../data/presets';
+import { StateMachinePhase } from '../hooks/useDoubleTapTrigger';
 
 interface SandboxPageProps {
   config: KeyRingConfig;
   t: TranslationDict;
   contextState: ContextState;
+  triggerPhase: StateMachinePhase;
+  lastEventNote: string;
+  onChangeModifier: (modifier: KeyRingConfig['trigger']['modifier']) => void;
   onToggleEntry: (entry: ContextEntry, multiSelect: boolean) => void;
   onClearSelection: () => void;
   onTriggerAtCenter: () => void;
@@ -25,6 +29,9 @@ export const SandboxPage: React.FC<SandboxPageProps> = ({
   config,
   t,
   contextState,
+  triggerPhase,
+  lastEventNote,
+  onChangeModifier,
   onToggleEntry,
   onClearSelection,
   onTriggerAtCenter,
@@ -39,6 +46,14 @@ export const SandboxPage: React.FC<SandboxPageProps> = ({
       : config.trigger.modifier === 'Control'
       ? 'Ctrl'
       : 'Alt';
+
+  const phaseText: Record<StateMachinePhase, string> = {
+    idle: t.preferences.stateIdle,
+    holding: t.preferences.stateHolding,
+    awaiting_second: t.preferences.stateAwaiting,
+    contaminated: t.preferences.stateContaminated,
+    triggered: t.preferences.stateTriggered,
+  };
 
   return (
     <div className="max-w-4xl mx-auto px-6 md:px-14 py-10 md:py-12">
@@ -129,16 +144,39 @@ export const SandboxPage: React.FC<SandboxPageProps> = ({
             })}
           </div>
 
-          <div className="px-4 py-2.5 bg-[#FAFAF9] dark:bg-[#171717] border-t border-neutral-200/80 dark:border-neutral-800 flex items-center justify-between text-[12px] text-neutral-500 dark:text-neutral-400">
-            <span>
-              {t.sandbox.selectedCountLabel}:{' '}
-              <strong className="font-mono tabular-nums text-neutral-800 dark:text-neutral-200">
-                {contextState.selectedPaths.length}
-              </strong>
-            </span>
-            <span className="font-mono text-[11.5px]">
-              2× {modifierBadge} ({config.trigger.intervalMs}ms)
-            </span>
+          <div className="px-4 py-2.5 bg-[#FAFAF9] dark:bg-[#171717] border-t border-neutral-200/80 dark:border-neutral-800 space-y-2 text-[12px] text-neutral-500 dark:text-neutral-400">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span>
+                {t.sandbox.selectedCountLabel}:{' '}
+                <strong className="font-mono tabular-nums text-neutral-800 dark:text-neutral-200">
+                  {contextState.selectedPaths.length}
+                </strong>
+              </span>
+              <div className="flex items-center gap-1.5">
+                {(['Command', 'Control', 'Alt'] as const).map((mod) => (
+                  <button
+                    key={mod}
+                    type="button"
+                    onClick={() => onChangeModifier(mod)}
+                    className={`px-2 py-0.5 rounded text-[11px] font-mono transition-colors ${
+                      config.trigger.modifier === mod
+                        ? 'bg-neutral-900 dark:bg-neutral-100 text-white dark:text-neutral-900 font-medium'
+                        : 'bg-neutral-200/60 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-200'
+                    }`}
+                  >
+                    {mod === 'Command' ? '⌘ Cmd' : mod}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="flex items-center justify-between gap-2 text-[11.5px]">
+              <span className="truncate text-neutral-600 dark:text-neutral-300">
+                {phaseText[triggerPhase]}
+              </span>
+              <span className="font-mono text-neutral-400 truncate shrink-0">
+                {lastEventNote || `2× ${modifierBadge} · ${config.trigger.intervalMs}ms`}
+              </span>
+            </div>
           </div>
         </section>
 

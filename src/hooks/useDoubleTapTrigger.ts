@@ -15,11 +15,39 @@ interface UseDoubleTapTriggerOptions {
   onTrigger: (coords: { x: number; y: number }) => void;
 }
 
-function matchesModifier(key: string, modifier: ModifierKey): boolean {
-  if (modifier === 'Command') return key === 'Meta';
-  if (modifier === 'Control') return key === 'Control';
-  if (modifier === 'Alt') return key === 'Alt';
+function matchesModifier(e: KeyboardEvent, modifier: ModifierKey): boolean {
+  if (modifier === 'Command') {
+    return (
+      e.key === 'Meta' ||
+      e.key === 'OS' ||
+      e.code === 'MetaLeft' ||
+      e.code === 'MetaRight'
+    );
+  }
+  if (modifier === 'Control') {
+    return (
+      e.key === 'Control' ||
+      e.code === 'ControlLeft' ||
+      e.code === 'ControlRight'
+    );
+  }
+  if (modifier === 'Alt') {
+    return (
+      e.key === 'Alt' ||
+      e.key === 'AltGraph' ||
+      e.code === 'AltLeft' ||
+      e.code === 'AltRight'
+    );
+  }
   return false;
+}
+
+function isImeNoiseKey(e: KeyboardEvent): boolean {
+  return (
+    e.key === 'Process' ||
+    e.key === 'Unidentified' ||
+    e.key === 'Dead'
+  );
 }
 
 export function useDoubleTapTrigger({
@@ -41,12 +69,14 @@ export function useDoubleTapTrigger({
     stage: 'idle' | 'holding_first' | 'awaiting_second' | 'holding_second';
     contaminated: boolean;
     firstReleaseAt: number;
+    secondPressAt: number;
     expireTimer: number | null;
     feedbackTimer: number | null;
   }>({
     stage: 'idle',
     contaminated: false,
     firstReleaseAt: 0,
+    secondPressAt: 0,
     expireTimer: null,
     feedbackTimer: null,
   });
@@ -70,7 +100,7 @@ export function useDoubleTapTrigger({
       setLastEventNote(note);
       machineRef.current.feedbackTimer = window.setTimeout(() => {
         setPhase((cur) => (cur === nextPhase ? 'idle' : cur));
-      }, 1200);
+      }, 1400);
     };
 
     const resetMachine = (reason?: StateMachinePhase, note = '') => {
@@ -89,11 +119,14 @@ export function useDoubleTapTrigger({
       return;
     }
 
-    const handleMouseMove = (e: MouseEvent) => {
-      mousePosRef.current = { x: e.clientX, y: e.clientY };
+    const updateMousePos = (e: MouseEvent) => {
+      if (e.clientX !== 0 || e.clientY !== 0) {
+        mousePosRef.current = { x: e.clientX, y: e.clientY };
+      }
     };
 
-    const handleMouseDown = () => {
+    const handleMouseDown = (e: MouseEvent) => {
+      updateMousePos(e);
       const m = machineRef.current;
       if (m.stage === 'holding_first' || m.stage === 'holding_second') {
         m.contaminated = true;
@@ -106,10 +139,12 @@ export function useDoubleTapTrigger({
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.repeat) return;
       const m = machineRef.current;
-      const isTarget = matchesModifier(e.key, modifier);
+      const isTarget = matchesModifier(e, modifier);
 
       if (isTarget) {
-        if (m.stage === 'idle') {
+        if (m.stage === 'idle' || m.stage === 'holding_first' || m.stage === 'holding_second') {
+          // Self-heal if previous keyup was missed by OS/browser
+          clearExpire();
           m.stage = 'holding_first';
           m.contaminated = false;
           setPhase('holding');
@@ -117,12 +152,16 @@ export function useDoubleTapTrigger({
         } else if (m.stage === 'awaiting_second') {
           clearExpire();
           m.stage = 'holding_second';
+          m.secondPressAt = performance.now();
           m.contaminated = false;
           setPhase('holding');
           setLastEventNote(`${modifier} Press (2/2)`);
         }
       } else {
-        // Any other key during modifier hold or awaiting second tap resets the machine
+        // Do not let IME composition pseudo-keys falsely contaminate a clean modifier tap
+        if (isImeNoiseKey(e)) return;
+
+        // Any other real key during modifier hold or awaiting second tap resets the machine
         if (m.stage === 'holding_first' || m.stage === 'holding_second') {
           m.contaminated = true;
           resetMachine('contaminated', `${modifier}+${e.key}`);
@@ -134,7 +173,7 @@ export function useDoubleTapTrigger({
 
     const handleKeyUp = (e: KeyboardEvent) => {
       const m = machineRef.current;
-      const isTarget = matchesModifier(e.key, modifier);
+      const isTarget = matchesModifier(e, modifier);
       if (!isTarget) return;
 
       const now = performance.now();
@@ -161,20 +200,27 @@ export function useDoubleTapTrigger({
           resetMachine('contaminated', 'Chord released');
           return;
         }
-        const delta = Math.round(now - m.firstReleaseAt);
-        setLastDeltaMs(delta);
-        if (delta <= intervalMs) {
+        const releaseDelta = Math.round(now - m.firstReleaseAt);
+        const interTapGap = Math.round(m.secondPressAt - m.firstReleaseAt);
+        const secondHoldMs = Math.round(now - m.secondPressAt);
+        setLastDeltaMs(interTapGap);
+
+        const withinWindow =
+          releaseDelta <= intervalMs ||
+          (interTapGap <= intervalMs && secondHoldMs <= 280);
+
+        if (withinWindow) {
           clearExpire();
           m.stage = 'idle';
           m.contaminated = false;
-          flashPhase('triggered', `Δ ${delta}ms ≤ ${intervalMs}ms`);
+          flashPhase('triggered', `Δ ${interTapGap}ms ≤ ${intervalMs}ms`);
           onTriggerRef.current({ ...mousePosRef.current });
         } else {
           // Treat slow second release as the new first release
           m.firstReleaseAt = now;
           m.stage = 'awaiting_second';
           setPhase('awaiting_second');
-          setLastEventNote(`Too slow (${delta}ms), restarted`);
+          setLastEventNote(`Too slow (${interTapGap}ms), restarted`);
           clearExpire();
           m.expireTimer = window.setTimeout(() => {
             if (machineRef.current.stage === 'awaiting_second') {
@@ -190,10 +236,10 @@ export function useDoubleTapTrigger({
       resetMachine();
     };
 
-    window.addEventListener('mousemove', handleMouseMove, { passive: true });
-    window.addEventListener('mousedown', handleMouseDown);
-    window.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('keyup', handleKeyUp);
+    window.addEventListener('mousemove', updateMousePos, { capture: true, passive: true });
+    window.addEventListener('mousedown', handleMouseDown, { capture: true });
+    window.addEventListener('keydown', handleKeyDown, { capture: true });
+    window.addEventListener('keyup', handleKeyUp, { capture: true });
     window.addEventListener('blur', handleBlur);
 
     return () => {
@@ -201,10 +247,10 @@ export function useDoubleTapTrigger({
       if (machineRef.current.feedbackTimer !== null) {
         window.clearTimeout(machineRef.current.feedbackTimer);
       }
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mousedown', handleMouseDown);
-      window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('keyup', handleKeyUp);
+      window.removeEventListener('mousemove', updateMousePos, { capture: true });
+      window.removeEventListener('mousedown', handleMouseDown, { capture: true });
+      window.removeEventListener('keydown', handleKeyDown, { capture: true });
+      window.removeEventListener('keyup', handleKeyUp, { capture: true });
       window.removeEventListener('blur', handleBlur);
     };
   }, [modifier, intervalMs, enabled]);

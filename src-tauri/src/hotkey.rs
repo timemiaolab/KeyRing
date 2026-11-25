@@ -42,6 +42,7 @@ struct MachineState {
     stage: Stage,
     contaminated: bool,
     first_release_at: Option<Instant>,
+    second_press_at: Option<Instant>,
     pointer_x: f64,
     pointer_y: f64,
 }
@@ -52,6 +53,7 @@ impl Default for MachineState {
             stage: Stage::Idle,
             contaminated: false,
             first_release_at: None,
+            second_press_at: None,
             pointer_x: 0.0,
             pointer_y: 0.0,
         }
@@ -130,20 +132,21 @@ pub fn spawn_hotkey_listener<F>(
                         state.contaminated = true;
                         state.stage = Stage::Idle;
                         state.first_release_at = None;
+                        state.second_press_at = None;
                     }
                 }
                 EventType::KeyPress(key) => {
                     if matches_modifier(key, cfg.modifier) {
                         match state.stage {
-                            Stage::Idle => {
+                            Stage::Idle | Stage::HoldingFirst | Stage::HoldingSecond => {
                                 state.stage = Stage::HoldingFirst;
                                 state.contaminated = false;
                             }
                             Stage::AwaitingSecond => {
                                 state.stage = Stage::HoldingSecond;
+                                state.second_press_at = Some(Instant::now());
                                 state.contaminated = false;
                             }
-                            _ => {}
                         }
                     } else if matches!(
                         state.stage,
@@ -152,6 +155,7 @@ pub fn spawn_hotkey_listener<F>(
                         state.contaminated = true;
                         state.stage = Stage::Idle;
                         state.first_release_at = None;
+                        state.second_press_at = None;
                     }
                 }
                 EventType::KeyRelease(key) => {
@@ -175,14 +179,29 @@ pub fn spawn_hotkey_listener<F>(
                                 state.stage = Stage::Idle;
                                 state.contaminated = false;
                                 state.first_release_at = None;
+                                state.second_press_at = None;
                                 return;
                             }
                             if let Some(first_at) = state.first_release_at {
-                                let delta = now.duration_since(first_at);
-                                if delta <= Duration::from_millis(cfg.interval_ms) {
+                                let release_delta = now.duration_since(first_at);
+                                let inter_tap_gap = state
+                                    .second_press_at
+                                    .map(|p| p.duration_since(first_at))
+                                    .unwrap_or(release_delta);
+                                let second_hold = state
+                                    .second_press_at
+                                    .map(|p| now.duration_since(p))
+                                    .unwrap_or_default();
+
+                                let within_window = release_delta <= Duration::from_millis(cfg.interval_ms)
+                                    || (inter_tap_gap <= Duration::from_millis(cfg.interval_ms)
+                                        && second_hold <= Duration::from_millis(280));
+
+                                if within_window {
                                     let (x, y) = (state.pointer_x, state.pointer_y);
                                     state.stage = Stage::Idle;
                                     state.first_release_at = None;
+                                    state.second_press_at = None;
                                     drop(state);
                                     on_trigger(x, y);
                                     return;
@@ -190,6 +209,7 @@ pub fn spawn_hotkey_listener<F>(
                             }
                             // Window expired; promote second release to fresh first tap
                             state.first_release_at = Some(now);
+                            state.second_press_at = None;
                             state.stage = Stage::AwaitingSecond;
                         }
                         _ => {}
