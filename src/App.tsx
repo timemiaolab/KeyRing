@@ -27,6 +27,12 @@ import { SandboxPage } from './components/SandboxPage';
 import { TauriSourcePage } from './components/TauriSourcePage';
 import { PieMenuOverlay } from './components/PieMenuOverlay';
 import { getSlotDisplayName } from './components/PieSvgRing';
+import {
+  executeNativeSlot,
+  getWindowMode,
+  hidePieWindow,
+  persistNativeConfig,
+} from './tauriBridge';
 
 const CONFIG_STORAGE_KEY = 'keyring_config_v1';
 const THEME_STORAGE_KEY = 'keyring_theme_v1';
@@ -55,6 +61,7 @@ function loadInitialConfig(): KeyRingConfig {
 }
 
 export default function App() {
+  const windowMode = getWindowMode();
   const [config, setConfig] = useState<KeyRingConfig>(loadInitialConfig);
   const [activePage, setActivePage] = useState<StudioPage>('composer');
   const [darkMode, setDarkMode] = useState<boolean>(() => {
@@ -68,8 +75,13 @@ export default function App() {
   const [listenerPaused, setListenerPaused] = useState(false);
 
   // Floating Pie Menu State
-  const [pieVisible, setPieVisible] = useState(false);
-  const [pieCoords, setPieCoords] = useState<{ x: number; y: number }>({ x: 600, y: 360 });
+  const [pieVisible, setPieVisible] = useState(() => windowMode === 'pie');
+  const [pieCoords, setPieCoords] = useState<{ x: number; y: number }>(() => {
+    if (windowMode === 'pie' && typeof window !== 'undefined') {
+      return { x: Math.round(window.innerWidth / 2), y: Math.round(window.innerHeight / 2) };
+    }
+    return { x: 600, y: 360 };
+  });
 
   // Context-Aware Sandbox State (default first folder selected for immediate testing)
   const [selectedEntries, setSelectedEntries] = useState<ContextEntry[]>([SANDBOX_ENTRIES[0]]);
@@ -90,6 +102,7 @@ export default function App() {
     } catch {
       // ignore quota errors
     }
+    void persistNativeConfig(config);
   }, [config]);
 
   useEffect(() => {
@@ -100,6 +113,21 @@ export default function App() {
       // ignore
     }
   }, [darkMode]);
+
+  useEffect(() => {
+    if (windowMode !== 'pie') {
+      return;
+    }
+    const previousHtml = document.documentElement.style.background;
+    const previousBody = document.body.style.background;
+    document.documentElement.style.background = 'transparent';
+    document.body.style.background = 'transparent';
+    document.body.classList.remove('bg-white');
+    return () => {
+      document.documentElement.style.background = previousHtml;
+      document.body.style.background = previousBody;
+    };
+  }, [windowMode]);
 
   const showToast = useCallback((title: string, detail: string) => {
     setToast({ title, detail });
@@ -116,7 +144,7 @@ export default function App() {
   const { phase, lastEventNote, lastDeltaMs, getPointerCoords } = useDoubleTapTrigger({
     modifier: config.trigger.modifier,
     intervalMs: config.trigger.intervalMs,
-    enabled: !listenerPaused && !pieVisible,
+    enabled: windowMode !== 'pie' && !listenerPaused && !pieVisible,
     onTrigger: summonPieAt,
   });
 
@@ -139,8 +167,23 @@ export default function App() {
     return SANDBOX_ROOT_DIR;
   }, [selectedEntries]);
 
+  const closePieMenu = useCallback(() => {
+    setPieVisible(false);
+    if (windowMode === 'pie') {
+      void hidePieWindow();
+    }
+  }, [windowMode]);
+
   const handleExecuteSlot = useCallback(
     async (slot: ActiveSlot) => {
+      if (windowMode === 'pie') {
+        const handled = await executeNativeSlot(slot.id);
+        await hidePieWindow();
+        setPieVisible(false);
+        if (handled) {
+          return;
+        }
+      }
       setPieVisible(false);
       const effectivePaths =
         contextState.selectedPaths.length > 0
@@ -227,6 +270,7 @@ export default function App() {
       resolveWorkingDirectory,
       showToast,
       t,
+      windowMode,
     ]
   );
 
@@ -388,6 +432,25 @@ export default function App() {
     }
   };
 
+  if (windowMode === 'pie') {
+    return (
+      <div className="w-screen h-screen bg-transparent overflow-hidden">
+        <PieMenuOverlay
+          visible={pieVisible}
+          coords={pieCoords}
+          slots={config.activeSlots}
+          ringDiameter={config.ui.ringDiameter}
+          innerHoleDiameter={config.ui.innerHoleDiameter}
+          iconSize={config.ui.iconSize}
+          t={t}
+          darkSurface={darkMode}
+          onExecute={handleExecuteSlot}
+          onClose={closePieMenu}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen w-full flex bg-white dark:bg-[#1F1F1F] text-[#1F1F1F] dark:text-[#EDEDEC]">
       {/* Frameless Notion-style Sidebar (No OS Top Bar) */}
@@ -483,7 +546,7 @@ export default function App() {
         t={t}
         darkSurface={darkMode}
         onExecute={handleExecuteSlot}
-        onClose={() => setPieVisible(false)}
+        onClose={closePieMenu}
       />
 
       {/* Lightweight Execution Notification Toast */}

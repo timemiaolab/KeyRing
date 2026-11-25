@@ -94,8 +94,9 @@ pub fn build_tray_menu(
 
 pub fn setup_tray(app: &AppHandle, locale: &str, autostart: bool) -> tauri::Result<()> {
     let menu = build_tray_menu(app, locale, autostart, false)?;
-    TrayIconBuilder::with_id("keyring-tray")
+    let mut builder = TrayIconBuilder::with_id("keyring-tray")
         .menu(&menu)
+        .tooltip("KeyRing")
         .on_menu_event(|app, event| match event.id.as_ref() {
             "tray_manage" => {
                 if let Some(win) = app.get_webview_window("config") {
@@ -107,7 +108,10 @@ pub fn setup_tray(app: &AppHandle, locale: &str, autostart: bool) -> tauri::Resu
                 app.exit(0);
             }
             _ => {}
-        })
-        .build(app)?;
+        });
+    if let Some(icon) = app.default_window_icon() {
+        builder = builder.icon(icon.clone());
+    }
+    builder.build(app)?;
     Ok(())
 }
