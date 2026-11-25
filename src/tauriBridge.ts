@@ -6,6 +6,9 @@ export interface RuntimeStatus {
   listenerRunning: boolean;
   listenerError: string | null;
   paused: boolean;
+  lastPlacementKind?: string | null;
+  lastPlacementMessage?: string | null;
+  lastPlacementClamp?: string | null;
 }
 
 export function getWindowMode(): WindowMode {

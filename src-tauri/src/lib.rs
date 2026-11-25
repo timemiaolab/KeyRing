@@ -1,12 +1,16 @@
 pub mod context;
 pub mod executor;
+#[cfg(target_os = "macos")]
+pub mod finder_ax;
 pub mod hotkey;
 pub mod hotkey_machine;
 pub mod icon;
+pub mod layout;
 pub mod paths;
 pub mod tray;
 
-use context::{capture_active_context, ContextSnapshot};
+use context::{capture_trigger_context, ContextSnapshot};
+use layout::{PlacementStatus, PositionCapture};
 use hotkey::{
     check_accessibility_permission, open_accessibility_settings, spawn_hotkey_listener,
     HotkeySettings, ListenerHealth, TriggerModifier,
@@ -19,6 +23,7 @@ use std::sync::{
     Arc, Mutex,
 };
 use tauri::{AppHandle, Emitter, Listener, LogicalPosition, Manager, Position, State};
+use tauri_plugin_notification::NotificationExt;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -129,6 +134,12 @@ pub struct RuntimeStatus {
     #[serde(rename = "listenerError")]
     pub listener_error: Option<String>,
     pub paused: bool,
+    #[serde(rename = "lastPlacementKind")]
+    pub last_placement_kind: Option<String>,
+    #[serde(rename = "lastPlacementMessage")]
+    pub last_placement_message: Option<String>,
+    #[serde(rename = "lastPlacementClamp")]
+    pub last_placement_clamp: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -136,6 +147,7 @@ struct PieTriggerPayload {
     x: f64,
     y: f64,
     context: ContextSnapshot,
+    position: PositionCapture,
 }
 
 pub struct AppStates {
@@ -143,6 +155,7 @@ pub struct AppStates {
     pub context: Mutex<ContextSnapshot>,
     pub hotkey_settings: Arc<Mutex<HotkeySettings>>,
     pub listener_health: Arc<Mutex<ListenerHealth>>,
+    pub last_placement: Mutex<Option<PlacementStatus>>,
     pub config_path: PathBuf,
 }
 
@@ -230,12 +243,20 @@ fn get_runtime_status(state: State<AppStates>) -> RuntimeStatus {
         .lock()
         .map(|s| s.paused)
         .unwrap_or(false);
+    let placement = state
+        .last_placement
+        .lock()
+        .ok()
+        .and_then(|value| value.clone());
     RuntimeStatus {
         platform: std::env::consts::OS.to_string(),
         accessibility_trusted: health.accessibility_trusted,
         listener_running: health.running,
         listener_error: health.last_error,
         paused,
+        last_placement_kind: placement.as_ref().map(|item| item.kind.clone()),
+        last_placement_message: placement.as_ref().and_then(|item| item.message.clone()),
+        last_placement_clamp: placement.as_ref().and_then(|item| item.clamp.clone()),
     }
 }
 
@@ -256,28 +277,103 @@ fn open_accessibility_settings_cmd() -> Result<(), String> {
     open_accessibility_settings()
 }
 
-fn show_pie_window(app: &AppHandle, x: f64, y: f64) {
+#[allow(dead_code)] // used on macOS when a trigger cannot be placed
+fn remember_placement(app: &AppHandle, status: PlacementStatus) {
+    let state = app.state::<AppStates>();
+    if let Ok(mut slot) = state.last_placement.lock() {
+        *slot = Some(status.clone());
+    }
+    let _ = app.emit("placement-status", status.clone());
+    if let Some(message) = status.message {
+        let _ = app
+            .notification()
+            .builder()
+            .title("KeyRing")
+            .body(message)
+            .show();
+    }
+}
+
+fn show_pie_window_at(app: &AppHandle, x: f64, y: f64, size: f64) {
     let Some(pie_win) = app.get_webview_window("pie") else {
         return;
     };
+    let _ = pie_win.set_size(tauri::LogicalSize::new(size, size));
+    let _ = pie_win.set_position(Position::Logical(LogicalPosition::new(x, y)));
+    let _ = pie_win.show();
+    let _ = pie_win.set_focus();
+    let _ = pie_win.unminimize();
+    let _ = app.emit("pie-shown", ());
+}
+
+fn show_pie_window_centered_on(app: &AppHandle, x: f64, y: f64) {
     let ring_size = app
         .state::<AppStates>()
         .config
         .lock()
         .map(|c| c.ui.ring_diameter as f64 + 60.0)
         .unwrap_or(320.0);
+    show_pie_window_at(app, x - ring_size / 2.0, y - ring_size / 2.0, ring_size);
+}
 
-    let pos_x = x - ring_size / 2.0;
-    let pos_y = y - ring_size / 2.0;
+fn handle_pie_trigger(app: &AppHandle, data: PieTriggerPayload) {
+    #[cfg(target_os = "macos")]
+    {
+        handle_macos_pie_trigger(app, data);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = data.position;
+        show_pie_window_centered_on(app, data.x, data.y);
+    }
+}
 
-    // Logical coordinates match rdev/CGEvent point space on macOS and avoid
-    // the previous PhysicalPosition + max(12) clamp that broke multi-monitor.
-    let _ = pie_win.set_size(tauri::LogicalSize::new(ring_size, ring_size));
-    let _ = pie_win.set_position(Position::Logical(LogicalPosition::new(pos_x, pos_y)));
-    let _ = pie_win.show();
-    let _ = pie_win.set_focus();
-    let _ = pie_win.unminimize();
-    let _ = app.emit("pie-shown", ());
+#[cfg(target_os = "macos")]
+fn handle_macos_pie_trigger(app: &AppHandle, data: PieTriggerPayload) {
+    use crate::finder_ax::list_screens;
+    use crate::layout::{cocoa_rect_to_y_down, place_pie_above_item, PieMetrics};
+
+    match data.position {
+        PositionCapture::Located { cocoa_rect, .. } => {
+            let layout = list_screens();
+            if layout.screens.is_empty() || layout.primary_height <= 0.0 {
+                remember_placement(
+                    app,
+                    PlacementStatus::from_capture(&PositionCapture::BoundsUnavailable {
+                        reason: "无法读取显示器信息。".into(),
+                    }),
+                );
+                return;
+            }
+            let item = cocoa_rect_to_y_down(cocoa_rect, layout.primary_height);
+            let ring = app
+                .state::<AppStates>()
+                .config
+                .lock()
+                .map(|c| c.ui.ring_diameter as f64)
+                .unwrap_or(260.0);
+            let metrics = PieMetrics::from_ring_diameter(ring);
+            let Some(placement) = place_pie_above_item(&item, &layout.screens, &metrics) else {
+                remember_placement(
+                    app,
+                    PlacementStatus::from_capture(&PositionCapture::BoundsUnavailable {
+                        reason: "没有可用的屏幕来放置圆环。".into(),
+                    }),
+                );
+                return;
+            };
+            remember_placement(app, PlacementStatus::located(placement.clamp));
+            show_pie_window_at(
+                app,
+                placement.window_x,
+                placement.window_y,
+                placement.window_size,
+            );
+        }
+        other => {
+            remember_placement(app, PlacementStatus::from_capture(&other));
+        }
+    }
 }
 
 pub fn run() {
@@ -319,6 +415,7 @@ pub fn run() {
                 context: Mutex::new(ContextSnapshot::default()),
                 hotkey_settings: Arc::clone(&hk_settings),
                 listener_health: Arc::clone(&listener_health),
+                last_placement: Mutex::new(None),
                 config_path,
             });
 
@@ -334,8 +431,8 @@ pub fn run() {
                 let parsed: Result<PieTriggerPayload, _> = serde_json::from_str(payload);
                 if let Ok(data) = parsed {
                     let state = app_handle.state::<AppStates>();
-                    *state.context.lock().unwrap() = data.context;
-                    show_pie_window(&app_handle, data.x, data.y);
+                    *state.context.lock().unwrap() = data.context.clone();
+                    handle_pie_trigger(&app_handle, data);
                 }
             });
 
@@ -346,11 +443,17 @@ pub fn run() {
                 running,
                 listener_health,
                 move |x, y| {
-                    // Capture Finder/Explorer selection while it is still frontmost.
-                    let context = capture_active_context();
+                    // Capture Finder selection and its screen rect while Finder
+                    // is still frontmost, before the pie window takes focus.
+                    let capture = capture_trigger_context();
                     let _ = emit_handle.emit(
                         "hotkey-triggered",
-                        PieTriggerPayload { x, y, context },
+                        PieTriggerPayload {
+                            x,
+                            y,
+                            context: capture.context,
+                            position: capture.position,
+                        },
                     );
                 },
             );

@@ -117,11 +117,17 @@ export const ConfigPage: React.FC<ConfigPageProps> = ({
           </div>
         )}
 
+        {status?.lastPlacementMessage && status.lastPlacementKind && status.lastPlacementKind !== 'located' && status.lastPlacementKind !== 'not_applicable' && (
+          <div className="rounded-2xl border border-amber-200 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-900/70 px-5 py-4 text-[13px] leading-relaxed text-amber-900/90 dark:text-amber-200/90">
+            {status.lastPlacementMessage}
+          </div>
+        )}
+
         <section className="grid md:grid-cols-[1.1fr_0.9fr] gap-8 items-start">
           <div>
             <h2 className="text-[20px] font-semibold tracking-tight">圆环上的动作</h2>
             <p className="mt-1 text-[13px] text-neutral-500 dark:text-neutral-400 leading-relaxed">
-              在访达里选中文件或文件夹，双击 Command，再点圆环上的选项。例如点 Cursor
+              在访达里选中文件或文件夹，双击 Command，圆环会出现在选中项的上方。再点圆环上的选项，例如点 Cursor
               会用 Cursor 打开选中项；点「在终端打开」会打开终端并进入该文件夹（若选的是文件，则进入它所在的文件夹）。
             </p>
 

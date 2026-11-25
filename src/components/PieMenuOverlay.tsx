@@ -94,6 +94,8 @@ export const PieMenuOverlay: React.FC<PieMenuOverlayProps> = ({
           left: clampedX,
           top: clampedY,
           transform: 'translate(-50%, -50%)',
+          width: ringDiameter + 44,
+          height: ringDiameter + 44,
         }}
         className="fixed animate-pie-in"
       >
@@ -112,7 +114,7 @@ export const PieMenuOverlay: React.FC<PieMenuOverlayProps> = ({
           darkSurface={darkSurface}
         />
 
-        <div className="mt-1 text-center pointer-events-none">
+        <div className="absolute left-0 right-0 text-center pointer-events-none" style={{ top: '100%', marginTop: 2 }}>
           <span className="inline-block rounded-md bg-white/90 dark:bg-neutral-900/90 border border-neutral-200/80 dark:border-neutral-800 px-2 py-0.5 text-[11px] text-neutral-500 dark:text-neutral-400 shadow-xs">
             {slots.length === 0 ? t.pie.noActiveSlots : t.pie.escHint}
           </span>

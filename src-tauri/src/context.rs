@@ -1,4 +1,7 @@
+use crate::layout::PositionCapture;
 use crate::paths::working_directory_from_paths;
+#[cfg(target_os = "macos")]
+use crate::layout::{align_paths_with_primary, AxItem};
 #[cfg(target_os = "macos")]
 use crate::paths::split_captured_paths;
 use serde::{Deserialize, Serialize};
@@ -21,6 +24,27 @@ impl ContextSnapshot {
         Vec::new()
     }
 
+    pub fn has_selected_items(&self) -> bool {
+        !self.selected_paths.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TriggerCapture {
+    pub context: ContextSnapshot,
+    pub position: PositionCapture,
+}
+
+impl TriggerCapture {
+    pub fn not_applicable(context: ContextSnapshot) -> Self {
+        Self {
+            context,
+            position: PositionCapture::NotApplicable,
+        }
+    }
+}
+
+impl ContextSnapshot {
     pub fn resolve_working_directory(&self) -> Option<PathBuf> {
         let mut paths = self.selected_paths.iter().map(|s| s.as_str()).collect::<Vec<_>>();
         if paths.is_empty() {
@@ -84,6 +108,83 @@ pub fn capture_active_context() -> ContextSnapshot {
     ContextSnapshot::default()
 }
 
+
+#[cfg(target_os = "macos")]
+pub fn capture_trigger_context() -> TriggerCapture {
+    use crate::finder_ax::{capture_finder_selection_bounds, is_finder_frontmost};
+
+    let frontmost = match is_finder_frontmost() {
+        Ok(value) => value,
+        Err(PositionCapture::AccessibilityDenied) => {
+            let context = capture_active_context();
+            return TriggerCapture {
+                context,
+                position: PositionCapture::AccessibilityDenied,
+            };
+        }
+        Err(other) => {
+            let context = capture_active_context();
+            return TriggerCapture {
+                context,
+                position: other,
+            };
+        }
+    };
+
+    let mut context = capture_active_context();
+    if !frontmost {
+        return TriggerCapture {
+            context,
+            position: PositionCapture::NoSelection,
+        };
+    }
+
+    let position = capture_finder_selection_bounds();
+    match position {
+        PositionCapture::Located {
+            cocoa_rect,
+            title,
+            url,
+            role,
+        } => {
+            let primary = AxItem {
+                title: title.clone(),
+                url: url.clone(),
+                role: role.clone(),
+                bounds_cocoa: cocoa_rect,
+            };
+            context.selected_paths = align_paths_with_primary(context.selected_paths, &primary);
+            TriggerCapture {
+                context,
+                position: PositionCapture::Located {
+                    cocoa_rect,
+                    title,
+                    url,
+                    role,
+                },
+            }
+        }
+        PositionCapture::AccessibilityDenied => TriggerCapture {
+            context,
+            position: PositionCapture::AccessibilityDenied,
+        },
+        PositionCapture::NoSelection | PositionCapture::BoundsUnavailable { .. } => {
+            let position = if !context.selected_paths.is_empty() {
+                PositionCapture::BoundsUnavailable {
+                    reason: "辅助功能树里没有找到选中项的屏幕坐标。当前访达视图可能不受支持。".into(),
+                }
+            } else {
+                PositionCapture::NoSelection
+            };
+            TriggerCapture { context, position }
+        }
+        other => TriggerCapture {
+            context,
+            position: other,
+        },
+    }
+}
+
 #[cfg(target_os = "windows")]
 pub fn capture_active_context() -> ContextSnapshot {
     use windows::Win32::System::Com::{
@@ -113,4 +214,9 @@ pub fn capture_active_context() -> ContextSnapshot {
 pub fn capture_active_context() -> ContextSnapshot {
     // Query D-Bus org.freedesktop.FileManager1 or X11 PRIMARY selection URIs and decode file:// paths
     ContextSnapshot::default()
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn capture_trigger_context() -> TriggerCapture {
+    TriggerCapture::not_applicable(capture_active_context())
 }

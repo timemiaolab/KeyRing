@@ -98,9 +98,18 @@ export default function App() {
         if (runtime) setStatus(runtime);
       });
     }, 2500);
+    let unlistenPlacement: (() => void) | undefined;
+    void listenNativeEvent('placement-status', () => {
+      void fetchRuntimeStatus().then((runtime) => {
+        if (!cancelled && runtime) setStatus(runtime);
+      });
+    }).then((fn) => {
+      unlistenPlacement = fn;
+    });
     return () => {
       cancelled = true;
       window.clearInterval(timer);
+      unlistenPlacement?.();
     };
   }, []);
 
