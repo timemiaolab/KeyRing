@@ -121,15 +121,12 @@ fn is_keyring_lib(path: &std::path::Path) -> bool {
     let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
         return false;
     };
+    // Only the dylib is a loadable image comparable to the shipped app.
+    // Static archives can contain extra object/debug metadata and are not
+    // what we ship. The CI script also asserts against the dylibs only.
     let crate_prefix = format!("{}{}", "libkey", "ring_lib");
-    if name == format!("{crate_prefix}.dylib")
-        || name == format!("{crate_prefix}.a")
-        || name == format!("{crate_prefix}.rlib")
-    {
-        return true;
-    }
-    name.starts_with(&format!("{crate_prefix}-"))
-        && (name.ends_with(".dylib") || name.ends_with(".rlib") || name.ends_with(".a"))
+    name == format!("{crate_prefix}.dylib")
+        || (name.starts_with(&format!("{crate_prefix}-")) && name.ends_with(".dylib"))
 }
 
 #[cfg(target_os = "macos")]
