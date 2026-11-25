@@ -52,6 +52,20 @@ struct NSRect {
     size: NSSize,
 }
 
+use objc2::encode::{Encode, Encoding};
+
+unsafe impl Encode for NSPoint {
+    const ENCODING: Encoding = Encoding::Struct("CGPoint", &[f64::ENCODING, f64::ENCODING]);
+}
+
+unsafe impl Encode for NSSize {
+    const ENCODING: Encoding = Encoding::Struct("CGSize", &[f64::ENCODING, f64::ENCODING]);
+}
+
+unsafe impl Encode for NSRect {
+    const ENCODING: Encoding = Encoding::Struct("CGRect", &[NSPoint::ENCODING, NSSize::ENCODING]);
+}
+
 type AXUIElementRef = *const c_void;
 type AXValueRef = *const c_void;
 type CFTypeRef = *const c_void;
@@ -555,7 +569,7 @@ pub fn list_screens() -> ScreenLayout {
     use objc2::msg_send;
 
     objc2::rc::autoreleasepool(|_| {
-        let Some(cls) = AnyClass::get("NSScreen") else {
+        let Some(cls) = AnyClass::get(c"NSScreen") else {
             return ScreenLayout::new(Vec::new(), 0.0);
         };
         let screens: *mut AnyObject = unsafe { msg_send![cls, screens] };
