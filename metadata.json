@@ -1,0 +1,6 @@
+{
+  "name": "KeyRing",
+  "description": "Context-aware cross-platform radial Pie Menu launcher with a Notion-style configuration studio and Tauri v2 + Rust architecture.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
