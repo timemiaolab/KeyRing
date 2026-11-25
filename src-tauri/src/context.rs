@@ -1,3 +1,6 @@
+use crate::paths::working_directory_from_paths;
+#[cfg(target_os = "macos")]
+use crate::paths::split_captured_paths;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -19,19 +22,17 @@ impl ContextSnapshot {
     }
 
     pub fn resolve_working_directory(&self) -> Option<PathBuf> {
-        if let Some(first) = self.selected_paths.first() {
-            let p = PathBuf::from(first);
-            if p.is_dir() {
-                return Some(p);
-            }
-            if let Some(parent) = p.parent() {
-                return Some(parent.to_path_buf());
+        let mut paths = self.selected_paths.iter().map(|s| s.as_str()).collect::<Vec<_>>();
+        if paths.is_empty() {
+            if let Some(dir) = &self.current_directory {
+                paths.push(dir.as_str());
             }
         }
-        self.current_directory.as_ref().map(PathBuf::from)
+        working_directory_from_paths(paths)
     }
 }
 
+/// Must be called while Finder is still frontmost, before KeyRing takes focus.
 #[cfg(target_os = "macos")]
 pub fn capture_active_context() -> ContextSnapshot {
     use std::process::Command;
@@ -63,11 +64,7 @@ pub fn capture_active_context() -> ContextSnapshot {
     };
 
     if let Some(rest) = output.strip_prefix("SEL:") {
-        let paths: Vec<String> = rest
-            .lines()
-            .map(|l| l.trim().trim_end_matches('/').to_string())
-            .filter(|l| !l.is_empty())
-            .collect();
+        let paths = split_captured_paths(rest);
         return ContextSnapshot {
             selected_paths: paths,
             current_directory: None,

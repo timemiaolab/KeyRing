@@ -43,8 +43,15 @@ export const PieMenuOverlay: React.FC<PieMenuOverlayProps> = ({
       }
     };
 
+    // Hidden or just-shown windows often fire a spurious blur on macOS.
+    // Wait until the window has actually lost focus after a short grace period.
     const handleBlur = () => {
-      onClose();
+      window.setTimeout(() => {
+        if (document.hasFocus()) {
+          return;
+        }
+        onClose();
+      }, 280);
     };
 
     window.addEventListener('keydown', handleKeyDown);

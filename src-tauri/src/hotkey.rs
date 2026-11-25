@@ -1,4 +1,8 @@
-use rdev::{listen, Event, EventType, Key};
+pub use crate::hotkey_machine::{
+    apply_event, matches_modifier, HotkeySettings, MachineState, TriggerModifier,
+};
+
+use rdev::{listen, Event};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
@@ -6,70 +10,15 @@ use std::sync::{
 use std::thread;
 use std::time::{Duration, Instant};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TriggerModifier {
-    Command,
-    Control,
-    Alt,
-}
-
-impl TriggerModifier {
-    pub fn from_str(value: &str) -> Self {
-        match value {
-            "Control" => Self::Control,
-            "Alt" => Self::Alt,
-            _ => Self::Command,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct HotkeySettings {
-    pub modifier: TriggerModifier,
-    pub interval_ms: u64,
-    pub paused: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Stage {
-    Idle,
-    HoldingFirst,
-    AwaitingSecond,
-    HoldingSecond,
-}
-
-struct MachineState {
-    stage: Stage,
-    contaminated: bool,
-    first_release_at: Option<Instant>,
-    second_press_at: Option<Instant>,
-    pointer_x: f64,
-    pointer_y: f64,
-}
-
-impl Default for MachineState {
-    fn default() -> Self {
-        Self {
-            stage: Stage::Idle,
-            contaminated: false,
-            first_release_at: None,
-            second_press_at: None,
-            pointer_x: 0.0,
-            pointer_y: 0.0,
-        }
-    }
-}
-
-fn matches_modifier(key: Key, modifier: TriggerModifier) -> bool {
-    match modifier {
-        TriggerModifier::Command => matches!(key, Key::MetaLeft | Key::MetaRight),
-        TriggerModifier::Control => matches!(key, Key::ControlLeft | Key::ControlRight),
-        TriggerModifier::Alt => matches!(key, Key::Alt | Key::AltGr),
-    }
+#[derive(Debug, Clone, Default)]
+pub struct ListenerHealth {
+    pub accessibility_trusted: bool,
+    pub running: bool,
+    pub last_error: Option<String>,
 }
 
 #[cfg(target_os = "macos")]
-pub fn ensure_accessibility_permission() -> bool {
+fn accessibility_trusted(prompt: bool) -> bool {
     #[link(name = "ApplicationServices", kind = "framework")]
     extern "C" {
         fn AXIsProcessTrustedWithOptions(options: *const std::ffi::c_void) -> bool;
@@ -81,146 +30,125 @@ pub fn ensure_accessibility_permission() -> bool {
 
     unsafe {
         let key = CFString::new("AXTrustedCheckOptionPrompt");
-        let val = CFBoolean::true_value();
+        let val = if prompt {
+            CFBoolean::true_value()
+        } else {
+            CFBoolean::false_value()
+        };
         let dict = CFDictionary::from_CFType_pairs(&[(key.as_CFType(), val.as_CFType())]);
         AXIsProcessTrustedWithOptions(dict.as_concrete_TypeRef() as *const _)
     }
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn ensure_accessibility_permission() -> bool {
+fn accessibility_trusted(_prompt: bool) -> bool {
     true
+}
+
+pub fn check_accessibility_permission(prompt: bool) -> bool {
+    accessibility_trusted(prompt)
+}
+
+pub fn open_accessibility_settings() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        // Official System Settings deep link. Do not suggest disabling SIP or other unsafe steps.
+        let status = std::process::Command::new("open")
+            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+            .status()
+            .map_err(|e| e.to_string())?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err("无法打开系统设置，请手动前往「系统设置 > 隐私与安全性 > 辅助功能」。".into())
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(())
+    }
 }
 
 pub fn spawn_hotkey_listener<F>(
     settings: Arc<Mutex<HotkeySettings>>,
     running: Arc<AtomicBool>,
+    health: Arc<Mutex<ListenerHealth>>,
     on_trigger: F,
 ) where
     F: Fn(f64, f64) + Send + Sync + 'static,
 {
-    let machine = Arc::new(Mutex::new(MachineState::default()));
-
+    let on_trigger = Arc::new(on_trigger);
     thread::spawn(move || {
-        let _ = ensure_accessibility_permission();
-
-        let callback = move |event: Event| {
-            if !running.load(Ordering::Relaxed) {
-                return;
+        // Retry when the event tap cannot be created (usually missing Accessibility).
+        // A successful listen() blocks in the platform run loop until process exit.
+        while running.load(Ordering::Relaxed) {
+            let trusted = check_accessibility_permission(false);
+            if let Ok(mut h) = health.lock() {
+                h.accessibility_trusted = trusted;
+                h.running = false;
             }
 
-            let cfg = match settings.lock() {
-                Ok(guard) => guard.clone(),
-                Err(_) => return,
-            };
-            if cfg.paused {
-                return;
+            if !trusted {
+                if let Ok(mut h) = health.lock() {
+                    h.last_error = Some(
+                        "系统尚未授权键盘监听。请在「系统设置 > 隐私与安全性 > 辅助功能」中打开 KeyRing，然后返回应用。"
+                            .into(),
+                    );
+                }
+                thread::sleep(Duration::from_secs(2));
+                continue;
             }
 
-            let mut state = match machine.lock() {
-                Ok(guard) => guard,
-                Err(_) => return,
-            };
+            let machine = Arc::new(Mutex::new(MachineState::default()));
+            let settings = Arc::clone(&settings);
+            let running_flag = Arc::clone(&running);
+            let on_trigger = Arc::clone(&on_trigger);
 
-            match event.event_type {
-                EventType::MouseMove { x, y } => {
-                    state.pointer_x = x;
-                    state.pointer_y = y;
-                }
-                EventType::ButtonPress(_) => {
-                    if matches!(state.stage, Stage::HoldingFirst | Stage::HoldingSecond | Stage::AwaitingSecond) {
-                        state.contaminated = true;
-                        state.stage = Stage::Idle;
-                        state.first_release_at = None;
-                        state.second_press_at = None;
-                    }
-                }
-                EventType::KeyPress(key) => {
-                    if matches_modifier(key, cfg.modifier) {
-                        match state.stage {
-                            Stage::Idle | Stage::HoldingFirst | Stage::HoldingSecond => {
-                                state.stage = Stage::HoldingFirst;
-                                state.contaminated = false;
-                            }
-                            Stage::AwaitingSecond => {
-                                state.stage = Stage::HoldingSecond;
-                                state.second_press_at = Some(Instant::now());
-                                state.contaminated = false;
-                            }
-                        }
-                    } else if matches!(
-                        state.stage,
-                        Stage::HoldingFirst | Stage::HoldingSecond | Stage::AwaitingSecond
-                    ) {
-                        state.contaminated = true;
-                        state.stage = Stage::Idle;
-                        state.first_release_at = None;
-                        state.second_press_at = None;
-                    }
-                }
-                EventType::KeyRelease(key) => {
-                    if !matches_modifier(key, cfg.modifier) {
+            let callback = {
+                let machine = Arc::clone(&machine);
+                move |event: Event| {
+                    if !running_flag.load(Ordering::Relaxed) {
                         return;
                     }
-
-                    let now = Instant::now();
-                    match state.stage {
-                        Stage::HoldingFirst => {
-                            if state.contaminated {
-                                state.stage = Stage::Idle;
-                                state.contaminated = false;
-                            } else {
-                                state.first_release_at = Some(now);
-                                state.stage = Stage::AwaitingSecond;
-                            }
-                        }
-                        Stage::HoldingSecond => {
-                            if state.contaminated {
-                                state.stage = Stage::Idle;
-                                state.contaminated = false;
-                                state.first_release_at = None;
-                                state.second_press_at = None;
-                                return;
-                            }
-                            if let Some(first_at) = state.first_release_at {
-                                let release_delta = now.duration_since(first_at);
-                                let inter_tap_gap = state
-                                    .second_press_at
-                                    .map(|p| p.duration_since(first_at))
-                                    .unwrap_or(release_delta);
-                                let second_hold = state
-                                    .second_press_at
-                                    .map(|p| now.duration_since(p))
-                                    .unwrap_or_default();
-
-                                let within_window = release_delta <= Duration::from_millis(cfg.interval_ms)
-                                    || (inter_tap_gap <= Duration::from_millis(cfg.interval_ms)
-                                        && second_hold <= Duration::from_millis(280));
-
-                                if within_window {
-                                    let (x, y) = (state.pointer_x, state.pointer_y);
-                                    state.stage = Stage::Idle;
-                                    state.first_release_at = None;
-                                    state.second_press_at = None;
-                                    drop(state);
-                                    on_trigger(x, y);
-                                    return;
-                                }
-                            }
-                            // Window expired; promote second release to fresh first tap
-                            state.first_release_at = Some(now);
-                            state.second_press_at = None;
-                            state.stage = Stage::AwaitingSecond;
-                        }
-                        _ => {}
+                    let cfg = match settings.lock() {
+                        Ok(guard) => guard.clone(),
+                        Err(_) => return,
+                    };
+                    let mut state = match machine.lock() {
+                        Ok(guard) => guard,
+                        Err(_) => return,
+                    };
+                    if let Some((x, y)) = apply_event(&mut state, event.event_type, &cfg, Instant::now())
+                    {
+                        drop(state);
+                        on_trigger(x, y);
                     }
                 }
-                _ => {}
-            }
-        };
+            };
 
-        if let Err(err) = listen(callback) {
-            eprintln!("KeyRing rdev listener error: {:?}", err);
+            if let Ok(mut h) = health.lock() {
+                h.running = true;
+                h.last_error = None;
+                h.accessibility_trusted = true;
+            }
+
+            match listen(callback) {
+                Ok(()) => {
+                    if let Ok(mut h) = health.lock() {
+                        h.running = false;
+                    }
+                    break;
+                }
+                Err(err) => {
+                    if let Ok(mut h) = health.lock() {
+                        h.running = false;
+                        h.last_error = Some(format!(
+                            "全局键盘监听未能启动（{err:?}）。请确认已在「辅助功能」中授权 KeyRing，授权后应用会自动重试。"
+                        ));
+                    }
+                    thread::sleep(Duration::from_secs(2));
+                }
+            }
         }
     });
 }
