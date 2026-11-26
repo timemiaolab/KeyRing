@@ -229,8 +229,12 @@ fn execute_slot(app: AppHandle, state: State<AppStates>, slot_id: String) -> Res
         ActiveSlot::Builtin { action, .. } if action == "open_in_terminal" => {
             executor::execute_open_in_terminal(&ctx, &cfg.terminal_app)?;
         }
-        ActiveSlot::App { exec_path, .. } => {
-            executor::execute_launch_app(exec_path, &ctx)?;
+        ActiveSlot::App {
+            exec_path,
+            preset_key,
+            ..
+        } => {
+            executor::execute_launch_app(exec_path, preset_key.as_deref(), &ctx)?;
         }
         _ => {}
     }
@@ -380,8 +384,34 @@ fn handle_macos_pie_trigger(app: &AppHandle, data: PieTriggerPayload) {
     }
 }
 
+pub fn show_config_window(app: &AppHandle) {
+    #[cfg(target_os = "macos")]
+    let _ = app.show();
+
+    let win = match app.get_webview_window("config") {
+        Some(existing) => Some(existing),
+        None => app
+            .config()
+            .app
+            .windows
+            .iter()
+            .find(|w| w.label == "config")
+            .and_then(|cfg| tauri::WebviewWindowBuilder::from_config(app, cfg).ok())
+            .and_then(|builder| builder.build().ok()),
+    };
+
+    if let Some(win) = win {
+        let _ = win.unminimize();
+        let _ = win.show();
+        let _ = win.set_focus();
+    }
+}
+
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show_config_window(app);
+        }))
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
@@ -389,6 +419,14 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if matches!(window.label(), "config" | "pie") {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .setup(|app| {
             let config_dir = app.path().app_config_dir().unwrap_or_else(|_| PathBuf::from("."));
             let config_path = config_dir.join("config.json");
@@ -462,9 +500,7 @@ pub fn run() {
                 },
             );
 
-            if let Some(config_win) = app.get_webview_window("config") {
-                let _ = config_win.show();
-            }
+            show_config_window(app.handle());
 
             Ok(())
         })
@@ -477,8 +513,14 @@ pub fn run() {
             request_accessibility_permission,
             open_accessibility_settings_cmd
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running KeyRing");
+        .build(tauri::generate_context!())
+        .expect("error while building KeyRing");
+
+    app.run(|app_handle, event| {
+        if let tauri::RunEvent::Reopen { .. } = event {
+            show_config_window(app_handle);
+        }
+    });
 }
 
 #[cfg(test)]

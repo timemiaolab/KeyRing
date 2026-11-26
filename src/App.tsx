@@ -200,7 +200,7 @@ export default function App() {
 
   return (
     <div className="h-screen w-screen flex flex-col bg-white dark:bg-[#1F1F1F] text-[#1F1F1F] dark:text-[#EDEDEC] overflow-hidden">
-      <TitleBar title="KeyRing" />
+      <TitleBar title="KeyRing" platform={status?.platform} />
       <ConfigPage
         config={config}
         t={t}

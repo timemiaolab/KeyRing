@@ -1,6 +1,6 @@
 use tauri::{
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
-    tray::TrayIconBuilder,
+    tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
     AppHandle, Manager,
 };
 
@@ -96,13 +96,28 @@ pub fn setup_tray(app: &AppHandle, locale: &str, autostart: bool) -> tauri::Resu
     let menu = build_tray_menu(app, locale, autostart, false)?;
     let mut builder = TrayIconBuilder::with_id("keyring-tray")
         .menu(&menu)
+        .show_menu_on_left_click(cfg!(target_os = "macos"))
         .tooltip("KeyRing")
+        .on_tray_icon_event(|tray, event| match event {
+            TrayIconEvent::DoubleClick {
+                button: MouseButton::Left,
+                ..
+            } => {
+                crate::show_config_window(tray.app_handle());
+            }
+            #[cfg(not(target_os = "macos"))]
+            TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: tauri::tray::MouseButtonState::Up,
+                ..
+            } => {
+                crate::show_config_window(tray.app_handle());
+            }
+            _ => {}
+        })
         .on_menu_event(|app, event| match event.id.as_ref() {
             "tray_manage" => {
-                if let Some(win) = app.get_webview_window("config") {
-                    let _ = win.show();
-                    let _ = win.set_focus();
-                }
+                crate::show_config_window(app);
             }
             "tray_pause" => {
                 let state = app.state::<crate::AppStates>();

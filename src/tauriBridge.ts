@@ -1,4 +1,17 @@
 export type WindowMode = 'pie' | 'config' | 'studio';
+export type DesktopPlatform = 'macos' | 'windows' | 'linux';
+
+export function detectDesktopPlatform(runtimePlatform?: string | null): DesktopPlatform {
+  if (runtimePlatform === 'macos' || runtimePlatform === 'windows' || runtimePlatform === 'linux') {
+    return runtimePlatform;
+  }
+  if (typeof navigator !== 'undefined') {
+    const ua = `${navigator.platform || ''} ${navigator.userAgent || ''}`.toLowerCase();
+    if (ua.includes('mac')) return 'macos';
+    if (ua.includes('win')) return 'windows';
+  }
+  return 'linux';
+}
 
 export interface RuntimeStatus {
   platform: string;
@@ -69,10 +82,30 @@ export async function minimizeCurrentWindow(): Promise<void> {
   }
 }
 
+export async function toggleMaximizeCurrentWindow(): Promise<boolean> {
+  try {
+    const { getCurrentWindow } = await import('@tauri-apps/api/window');
+    const win = getCurrentWindow();
+    await win.toggleMaximize();
+    return await win.isMaximized();
+  } catch {
+    return false;
+  }
+}
+
+export async function isCurrentWindowMaximized(): Promise<boolean> {
+  try {
+    const { getCurrentWindow } = await import('@tauri-apps/api/window');
+    return await getCurrentWindow().isMaximized();
+  } catch {
+    return false;
+  }
+}
+
 export async function closeCurrentWindow(): Promise<void> {
   try {
     const { getCurrentWindow } = await import('@tauri-apps/api/window');
-    await getCurrentWindow().close();
+    await getCurrentWindow().hide();
   } catch {
     window.close();
   }
