@@ -7,7 +7,8 @@
 //! Finder is still frontmost, before KeyRing takes focus.
 
 use crate::layout::{
-    choose_primary, cocoa_rect_to_y_down, AxItem, PositionCapture, Rect, Screen, ScreenLayout,
+    choose_primary, cocoa_rect_to_y_down, tighten_wide_row_bounds, AxItem, PositionCapture, Rect,
+    Screen, ScreenLayout,
 };
 use core_foundation::base::TCFType;
 use core_foundation::string::{CFString, CFStringRef};
@@ -323,12 +324,94 @@ fn first_title(candidates: [Option<String>; 3]) -> Option<String> {
     None
 }
 
+fn inspect_leading_row_children(
+    element: &AxElem,
+    raw: Rect,
+    title: &mut Option<String>,
+    url: &mut Option<String>,
+) -> Result<(Option<Rect>, Option<Rect>, Option<Rect>), PositionCapture> {
+    let mut icon_rect: Option<Rect> = None;
+    let mut text_rect: Option<Rect> = None;
+    let mut first_cell_rect: Option<Rect> = None;
+
+    let children = copy_array(element, "AXChildren")?;
+    let mut candidates: Vec<AxElem> = Vec::new();
+    let mut inspected_first_cell = false;
+
+    for child in children {
+        let child_role = copy_string(&child, "AXRole")?;
+        if !inspected_first_cell
+            && matches!(child_role.as_deref(), Some("AXCell" | "AXGroup"))
+        {
+            inspected_first_cell = true;
+            if first_cell_rect.is_none() {
+                first_cell_rect = bounds_of(&child)?;
+            }
+            if title.is_none() {
+                *title = first_title([
+                    copy_string(&child, "AXTitle")?,
+                    copy_string(&child, "AXFilename")?,
+                    copy_string(&child, "AXValue")?,
+                ]);
+            }
+            if url.is_none() {
+                *url = copy_string(&child, "AXURL")?;
+            }
+            for grandchild in copy_array(&child, "AXChildren")? {
+                candidates.push(grandchild);
+            }
+        } else if !inspected_first_cell {
+            candidates.push(child);
+        }
+    }
+
+    for node in &candidates {
+        let node_role = copy_string(node, "AXRole")?;
+        match node_role.as_deref() {
+            Some("AXImage") => {
+                if icon_rect.is_none() {
+                    if let Some(rect) = bounds_of(node)? {
+                        if rect.overlaps_x(&raw) {
+                            icon_rect = Some(rect);
+                        }
+                    }
+                }
+            }
+            Some("AXTextField" | "AXStaticText") => {
+                if text_rect.is_none() {
+                    if let Some(rect) = bounds_of(node)? {
+                        if rect.overlaps_x(&raw) {
+                            text_rect = Some(rect);
+                        }
+                    }
+                }
+                if title.is_none() {
+                    *title = first_title([
+                        copy_string(node, "AXValue")?,
+                        copy_string(node, "AXTitle")?,
+                        copy_string(node, "AXFilename")?,
+                    ]);
+                }
+                if url.is_none() {
+                    *url = copy_string(node, "AXURL")?;
+                }
+            }
+            _ => {}
+        }
+        if icon_rect.is_some() && text_rect.is_some() {
+            break;
+        }
+    }
+
+    Ok((icon_rect, text_rect, first_cell_rect))
+}
+
 fn read_item(element: &AxElem) -> Result<Option<AxItem>, PositionCapture> {
-    let Some(bounds_cocoa) = bounds_of(element)? else {
+    let Some(raw_bounds) = bounds_of(element)? else {
         return Ok(None);
     };
     // Skip huge containers (windows, scroll areas) — they are not icon bounds.
-    if bounds_cocoa.width > 1600.0 && bounds_cocoa.height > 700.0 {
+    if raw_bounds.width > 1600.0 && raw_bounds.height > 700.0 {
         return Ok(None);
     }
     let role = copy_string(element, "AXRole")?;
@@ -343,21 +426,41 @@ fn read_item(element: &AxElem) -> Result<Option<AxItem>, PositionCapture> {
                 | "AXMenuBar"
                 | "AXGrowArea"
                 | "AXLayoutArea"
+                | "AXOutline"
+                | "AXTable"
+                | "AXBrowser"
         ) {
             return Ok(None);
         }
     }
-    let title = first_title([
+    let mut title = first_title([
         copy_string(element, "AXTitle")?,
         copy_string(element, "AXDescription")?,
         copy_string(element, "AXFilename")?,
     ]);
-    let url = copy_string(element, "AXURL")?;
+    let mut url = copy_string(element, "AXURL")?;
+
+    let is_row = role.as_deref() == Some("AXRow");
+    let bounds = if is_row || raw_bounds.width > 240.0 {
+        let (icon_rect, text_rect, first_cell_rect) =
+            inspect_leading_row_children(element, raw_bounds, &mut title, &mut url)?;
+        tighten_wide_row_bounds(
+            raw_bounds,
+            icon_rect,
+            text_rect,
+            first_cell_rect,
+            title.as_deref(),
+            is_row,
+        )
+    } else {
+        raw_bounds
+    };
+
     Ok(Some(AxItem {
         title,
         url,
         role,
-        bounds_cocoa,
+        bounds,
     }))
 }
 

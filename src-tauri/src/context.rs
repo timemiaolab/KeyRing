@@ -142,7 +142,7 @@ pub fn capture_trigger_context() -> TriggerCapture {
     let position = capture_finder_selection_bounds();
     match position {
         PositionCapture::Located {
-            cocoa_rect,
+            bounds,
             title,
             url,
             role,
@@ -151,13 +151,13 @@ pub fn capture_trigger_context() -> TriggerCapture {
                 title: title.clone(),
                 url: url.clone(),
                 role: role.clone(),
-                bounds_cocoa: cocoa_rect,
+                bounds,
             };
             context.selected_paths = align_paths_with_primary(context.selected_paths, &primary);
             TriggerCapture {
                 context,
                 position: PositionCapture::Located {
-                    cocoa_rect,
+                    bounds,
                     title,
                     url,
                     role,

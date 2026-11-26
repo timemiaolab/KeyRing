@@ -1,11 +1,13 @@
 //! Screen-space conversion and pie placement above a Finder selection.
 //!
-//! Coordinate spaces:
-//! - `CocoaRect`: AppKit / Accessibility points, origin at the bottom-left of
-//!   the primary display, Y increases upward. This is what `AXPosition` uses.
-//! - `Rect` (Y-down): origin at the top-left of the primary display, Y increases
-//!   downward, still in points (not pixels). This matches Tauri `LogicalPosition`
-//!   and `CGEvent` locations on macOS.
+//! Coordinate spaces on macOS:
+//! - `NSScreen` (`frame`, `visibleFrame`): AppKit Cocoa points, origin at the
+//!   bottom-left of the primary display, Y increases upward. `finder_ax::list_screens`
+//!   converts these into Y-down via `cocoa_rect_to_y_down`.
+//! - `AXPosition` / `CGEvent` / Tauri `LogicalPosition` (`Rect`): Quartz global
+//!   display points, origin at the top-left of the primary display, Y increases
+//!   downward. `AXPosition` is already Y-down and must NOT be flipped with
+//!   `cocoa_rect_to_y_down`.
 //!
 //! Backing scale is recorded for tests but never used to multiply coordinates.
 //! Mixed-DPI arrangements stay in global logical points.
@@ -260,7 +262,67 @@ pub struct AxItem {
     pub title: Option<String>,
     pub url: Option<String>,
     pub role: Option<String>,
-    pub bounds_cocoa: Rect,
+    pub bounds: Rect,
+}
+
+/// Tighten a wide Finder row/cell rect (such as List View `AXRow`, which often
+/// spans the entire Finder window width) around the leading file icon and
+/// filename so the pie centers above the item name rather than mid-window.
+pub fn tighten_wide_row_bounds(
+    raw: Rect,
+    icon: Option<Rect>,
+    text: Option<Rect>,
+    first_cell: Option<Rect>,
+    title: Option<&str>,
+    is_row: bool,
+) -> Rect {
+    if !is_row && raw.width <= 240.0 {
+        return raw;
+    }
+
+    let est_title_w = title
+        .map(|s| (s.trim().chars().count() as f64 * 7.5).clamp(28.0, 120.0))
+        .unwrap_or(80.0);
+
+    if let Some(icon_rect) = icon {
+        let max_right = text
+            .map(|t| t.right())
+            .or_else(|| first_cell.map(|c| c.right()))
+            .unwrap_or_else(|| raw.right())
+            .min(raw.right());
+        let tight_right = match text {
+            Some(t) if t.width <= 140.0 && t.right() > icon_rect.right() => t.right(),
+            _ => (icon_rect.right() + 6.0 + est_title_w).min(max_right.max(icon_rect.right() + 28.0)),
+        };
+        let left = icon_rect.x.max(raw.x);
+        let top = raw.y.min(icon_rect.y);
+        let bottom = raw.bottom().max(icon_rect.bottom());
+        let width = (tight_right - left).max(icon_rect.width).min(raw.width);
+        return Rect::new(left, top, width, bottom - top);
+    }
+
+    if let Some(text_rect) = text {
+        let max_w = title
+            .map(|s| (s.trim().chars().count() as f64 * 7.5 + 24.0).clamp(48.0, 160.0))
+            .unwrap_or(140.0);
+        let width = text_rect.width.min(max_w).max(16.0);
+        let top = raw.y.min(text_rect.y);
+        let bottom = raw.bottom().max(text_rect.bottom());
+        return Rect::new(text_rect.x, top, width, bottom - top);
+    }
+
+    if let Some(cell_rect) = first_cell {
+        let width = cell_rect.width.min(180.0).max(16.0);
+        let top = raw.y.min(cell_rect.y);
+        let bottom = raw.bottom().max(cell_rect.bottom());
+        return Rect::new(cell_rect.x, top, width, bottom - top);
+    }
+
+    if raw.width > 240.0 {
+        return Rect::new(raw.x, raw.y, 160.0, raw.height);
+    }
+
+    raw
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -284,8 +346,8 @@ pub fn choose_primary(items: &[AxItem]) -> Option<PrimaryChoice<'_>> {
             .iter()
             .enumerate()
             .max_by(|(_, a), (_, b)| {
-                let ax = a.bounds_cocoa.x + a.bounds_cocoa.width / 2.0;
-                let bx = b.bounds_cocoa.x + b.bounds_cocoa.width / 2.0;
+                let ax = a.bounds.x + a.bounds.width / 2.0;
+                let bx = b.bounds.x + b.bounds.width / 2.0;
                 ax.partial_cmp(&bx).unwrap_or(std::cmp::Ordering::Equal)
             })
             .unwrap();
@@ -301,12 +363,12 @@ fn looks_like_column_path(items: &[AxItem]) -> bool {
     if items.len() < 2 {
         return false;
     }
-    if items.iter().all(|item| item.bounds_cocoa.is_icon_like()) {
+    if items.iter().all(|item| item.bounds.is_icon_like()) {
         return false;
     }
     for (index, item) in items.iter().enumerate() {
         for other in items.iter().skip(index + 1) {
-            if item.bounds_cocoa.overlaps_x(&other.bounds_cocoa) {
+            if item.bounds.overlaps_x(&other.bounds) {
                 return false;
             }
         }
@@ -409,8 +471,8 @@ pub fn align_paths_with_primary(paths: Vec<String>, primary: &AxItem) -> Vec<Str
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PositionCapture {
     Located {
-        #[serde(rename = "cocoaRect")]
-        cocoa_rect: Rect,
+        #[serde(rename = "bounds", alias = "cocoaRect")]
+        bounds: Rect,
         title: Option<String>,
         url: Option<String>,
         role: Option<String>,
@@ -426,7 +488,7 @@ pub enum PositionCapture {
 impl PositionCapture {
     pub fn from_primary(primary: &AxItem) -> Self {
         PositionCapture::Located {
-            cocoa_rect: primary.bounds_cocoa,
+            bounds: primary.bounds,
             title: primary.title.clone(),
             url: primary.url.clone(),
             role: primary.role.clone(),
@@ -673,13 +735,13 @@ mod tests {
                 title: Some("A".into()),
                 url: None,
                 role: Some("AXImage".into()),
-                bounds_cocoa: Rect::new(0.0, 0.0, 64.0, 64.0),
+                bounds: Rect::new(0.0, 0.0, 64.0, 64.0),
             },
             AxItem {
                 title: Some("B".into()),
                 url: None,
                 role: Some("AXImage".into()),
-                bounds_cocoa: Rect::new(80.0, 0.0, 64.0, 64.0),
+                bounds: Rect::new(80.0, 0.0, 64.0, 64.0),
             },
         ];
         let primary = choose_primary(&items).unwrap();
@@ -694,18 +756,54 @@ mod tests {
                 title: Some("notes.md".into()),
                 url: None,
                 role: Some("AXRow".into()),
-                bounds_cocoa: Rect::new(20.0, 400.0, 600.0, 22.0),
+                bounds: Rect::new(20.0, 400.0, 600.0, 22.0),
             },
             AxItem {
                 title: Some("draft.md".into()),
                 url: None,
                 role: Some("AXRow".into()),
-                bounds_cocoa: Rect::new(20.0, 378.0, 600.0, 22.0),
+                bounds: Rect::new(20.0, 378.0, 600.0, 22.0),
             },
         ];
         let primary = choose_primary(&items).unwrap();
         assert_eq!(primary.index, 0);
         assert_eq!(primary.item.title.as_deref(), Some("notes.md"));
+    }
+
+    #[test]
+    fn list_row_bounds_tighten_around_leading_icon_and_name() {
+        // Finder List View row spanning 900pt across the window, while `test` icon sits at x=244.
+        let row = Rect::new(220.0, 120.0, 900.0, 22.0);
+        let first_cell = Rect::new(220.0, 120.0, 360.0, 22.0);
+        let icon = Rect::new(244.0, 122.0, 18.0, 18.0);
+        let text = Rect::new(266.0, 122.0, 310.0, 18.0);
+
+        let tight = tighten_wide_row_bounds(
+            row,
+            Some(icon),
+            Some(text),
+            Some(first_cell),
+            Some("test"),
+            true,
+        );
+        let (cx, _) = tight.center();
+        // Centered tight on `📁 test`, NOT mid-window at x=670 under the Size column.
+        assert!(cx >= 244.0 && cx <= 310.0, "unexpected center x={cx}");
+        assert_eq!(tight.y, 120.0);
+
+        let screens = vec![primary_screen()];
+        let placed = place_pie_above_item(&tight, &screens, &metrics()).unwrap();
+        let pie_cx = placed.window_x + placed.window_size / 2.0;
+        assert!((pie_cx - cx).abs() < 1e-6);
+        // Item near top (y=120) must place pie near top of visible area, never flipped to bottom.
+        assert_eq!(placed.window_y, 25.0);
+    }
+
+    #[test]
+    fn list_row_without_children_caps_width_at_leading_edge() {
+        let row = Rect::new(220.0, 500.0, 900.0, 22.0);
+        let tight = tighten_wide_row_bounds(row, None, None, None, Some("test"), true);
+        assert_eq!(tight, Rect::new(220.0, 500.0, 160.0, 22.0));
     }
 
     #[test]
@@ -715,19 +813,19 @@ mod tests {
                 title: Some("Projects".into()),
                 url: None,
                 role: Some("AXTextField".into()),
-                bounds_cocoa: Rect::new(10.0, 200.0, 180.0, 20.0),
+                bounds: Rect::new(10.0, 200.0, 180.0, 20.0),
             },
             AxItem {
                 title: Some("KeyRing".into()),
                 url: None,
                 role: Some("AXTextField".into()),
-                bounds_cocoa: Rect::new(210.0, 140.0, 180.0, 20.0),
+                bounds: Rect::new(210.0, 140.0, 180.0, 20.0),
             },
             AxItem {
                 title: Some("README.md".into()),
                 url: None,
                 role: Some("AXTextField".into()),
-                bounds_cocoa: Rect::new(410.0, 80.0, 180.0, 20.0),
+                bounds: Rect::new(410.0, 80.0, 180.0, 20.0),
             },
         ];
         let primary = choose_primary(&items).unwrap();
@@ -746,7 +844,7 @@ mod tests {
             title: Some("B file.txt".into()),
             url: Some("file:///Users/test/My%20Folder/B%20file.txt".into()),
             role: Some("AXImage".into()),
-            bounds_cocoa: Rect::new(0.0, 0.0, 48.0, 48.0),
+            bounds: Rect::new(0.0, 0.0, 48.0, 48.0),
         };
         let aligned = align_paths_with_primary(paths, &primary);
         assert_eq!(aligned[0], "/Users/test/My Folder/B file.txt");
@@ -761,7 +859,7 @@ mod tests {
             title: Some("Unknown".into()),
             url: None,
             role: None,
-            bounds_cocoa: Rect::new(0.0, 0.0, 20.0, 20.0),
+            bounds: Rect::new(0.0, 0.0, 20.0, 20.0),
         };
         assert_eq!(
             align_paths_with_primary(paths.clone(), &primary),

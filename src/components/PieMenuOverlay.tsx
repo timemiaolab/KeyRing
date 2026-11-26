@@ -12,6 +12,7 @@ interface PieMenuOverlayProps {
   iconSize: number;
   t: TranslationDict;
   darkSurface: boolean;
+  nativePieMode?: boolean;
   onExecute: (slot: ActiveSlot) => void;
   onClose: () => void;
 }
@@ -25,6 +26,7 @@ export const PieMenuOverlay: React.FC<PieMenuOverlayProps> = ({
   iconSize,
   t,
   darkSurface,
+  nativePieMode = false,
   onExecute,
   onClose,
 }) => {
@@ -64,7 +66,9 @@ export const PieMenuOverlay: React.FC<PieMenuOverlayProps> = ({
 
   if (!visible) return null;
 
-  // Screen boundary clamping with safety margin
+  const canvasSize = ringDiameter + 44;
+
+  // Screen boundary clamping with safety margin for browser/sandbox mode
   const pad = 22;
   const totalHalf = ringDiameter / 2 + pad;
   const safetyMargin = 16;
@@ -82,43 +86,53 @@ export const PieMenuOverlay: React.FC<PieMenuOverlayProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-50 bg-neutral-950/10 dark:bg-black/30 backdrop-blur-[1px]"
+      className={
+        nativePieMode
+          ? 'fixed inset-0 z-50 bg-transparent'
+          : 'fixed inset-0 z-50 bg-neutral-950/10 dark:bg-black/30 backdrop-blur-[1px]'
+      }
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) {
           onClose();
         }
       }}
     >
+      {/* Keep translate(-50%, -50%) separate from .animate-pie-in so scale keyframes never overwrite centering */}
       <div
         style={{
-          left: clampedX,
-          top: clampedY,
+          left: nativePieMode ? '50%' : clampedX,
+          top: nativePieMode ? '50%' : clampedY,
           transform: 'translate(-50%, -50%)',
-          width: ringDiameter + 44,
-          height: ringDiameter + 44,
+          width: canvasSize,
+          height: canvasSize,
         }}
-        className="fixed animate-pie-in"
+        className="fixed"
       >
-        <PieSvgRing
-          slots={slots}
-          ringDiameter={ringDiameter}
-          innerHoleDiameter={innerHoleDiameter}
-          iconSize={iconSize}
-          t={t}
-          hoveredIndex={hoveredIndex}
-          onHoverIndex={setHoveredIndex}
-          onSelectSlot={(slot) => {
-            onExecute(slot);
-          }}
-          onCenterClick={onClose}
-          darkSurface={darkSurface}
-        />
-
-        <div className="absolute left-0 right-0 text-center pointer-events-none" style={{ top: '100%', marginTop: 2 }}>
-          <span className="inline-block rounded-md bg-white/90 dark:bg-neutral-900/90 border border-neutral-200/80 dark:border-neutral-800 px-2 py-0.5 text-[11px] text-neutral-500 dark:text-neutral-400 shadow-xs">
-            {slots.length === 0 ? t.pie.noActiveSlots : t.pie.escHint}
-          </span>
+        <div className="animate-pie-in w-full h-full">
+          <PieSvgRing
+            slots={slots}
+            ringDiameter={ringDiameter}
+            innerHoleDiameter={innerHoleDiameter}
+            iconSize={iconSize}
+            t={t}
+            hoveredIndex={hoveredIndex}
+            onHoverIndex={setHoveredIndex}
+            onSelectSlot={(slot) => {
+              onExecute(slot);
+            }}
+            onCenterClick={onClose}
+            centerOverrideText={slots.length === 0 ? t.pie.noActiveSlots : null}
+            darkSurface={darkSurface}
+          />
         </div>
+
+        {!nativePieMode && (
+          <div className="absolute left-0 right-0 text-center pointer-events-none" style={{ top: '100%', marginTop: 2 }}>
+            <span className="inline-block rounded-md bg-white/90 dark:bg-neutral-900/90 border border-neutral-200/80 dark:border-neutral-800 px-2 py-0.5 text-[11px] text-neutral-500 dark:text-neutral-400 shadow-xs">
+              {slots.length === 0 ? t.pie.noActiveSlots : t.pie.escHint}
+            </span>
+          </div>
+        )}
       </div>
     </div>
   );

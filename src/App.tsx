@@ -190,6 +190,7 @@ export default function App() {
           iconSize={config.ui.iconSize}
           t={t}
           darkSurface={darkMode}
+          nativePieMode
           onExecute={handleExecuteSlot}
           onClose={closePieMenu}
         />

@@ -335,10 +335,10 @@ fn handle_pie_trigger(app: &AppHandle, data: PieTriggerPayload) {
 #[cfg(target_os = "macos")]
 fn handle_macos_pie_trigger(app: &AppHandle, data: PieTriggerPayload) {
     use crate::finder_ax::list_screens;
-    use crate::layout::{cocoa_rect_to_y_down, place_pie_above_item, PieMetrics};
+    use crate::layout::{place_pie_above_item, PieMetrics};
 
     match data.position {
-        PositionCapture::Located { cocoa_rect, .. } => {
+        PositionCapture::Located { bounds, .. } => {
             let layout = list_screens();
             if layout.screens.is_empty() || layout.primary_height <= 0.0 {
                 remember_placement(
@@ -349,7 +349,7 @@ fn handle_macos_pie_trigger(app: &AppHandle, data: PieTriggerPayload) {
                 );
                 return;
             }
-            let item = cocoa_rect_to_y_down(cocoa_rect, layout.primary_height);
+            // AXPosition / AXSize are already in top-left Y-down global logical points.
             let ring = app
                 .state::<AppStates>()
                 .config
@@ -357,7 +357,7 @@ fn handle_macos_pie_trigger(app: &AppHandle, data: PieTriggerPayload) {
                 .map(|c| c.ui.ring_diameter as f64)
                 .unwrap_or(260.0);
             let metrics = PieMetrics::from_ring_diameter(ring);
-            let Some(placement) = place_pie_above_item(&item, &layout.screens, &metrics) else {
+            let Some(placement) = place_pie_above_item(&bounds, &layout.screens, &metrics) else {
                 remember_placement(
                     app,
                     PlacementStatus::from_capture(&PositionCapture::BoundsUnavailable {

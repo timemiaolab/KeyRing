@@ -11,6 +11,22 @@
     font-family: var(--font-sans);
   }
 
+  html:not(.pie-window) body {
+    background-color: #ffffff;
+  }
+
+  html.dark:not(.pie-window) body {
+    background-color: #1f1f1f;
+  }
+
+  html.pie-window,
+  html.pie-window body,
+  html.pie-window #root {
+    background: transparent !important;
+    background-color: transparent !important;
+    overflow: hidden !important;
+  }
+
   code, pre, .font-mono {
     font-family: var(--font-mono);
   }
