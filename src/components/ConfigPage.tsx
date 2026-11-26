@@ -1,11 +1,16 @@
 import React, { useState } from 'react';
-import { Check, FolderPlus, LockKeyhole, Plus, Trash2 } from 'lucide-react';
+import { Check, FolderPlus, LockKeyhole, Pause, Play, Plus, Trash2 } from 'lucide-react';
 import { ActiveSlot, KeyRingConfig, ModifierKey } from '../types/keyring';
 import { COMMON_IDE_PRESETS } from '../data/presets';
 import { AppBrandIcon, getSlotIconProps } from './AppBrandIcon';
 import { PieSvgRing, getSlotDisplayName } from './PieSvgRing';
 import { TranslationDict } from '../i18n/translations';
-import { RuntimeStatus, openAccessibilitySettings, requestAccessibilityPermission } from '../tauriBridge';
+import {
+  RuntimeStatus,
+  openAccessibilitySettings,
+  requestAccessibilityPermission,
+  setListenerPaused,
+} from '../tauriBridge';
 
 interface ConfigPageProps {
   config: KeyRingConfig;
@@ -86,9 +91,86 @@ export const ConfigPage: React.FC<ConfigPageProps> = ({
     }
   };
 
+  const handleTogglePaused = async () => {
+    const nextPaused = !(status?.paused ?? false);
+    const nextStatus = await setListenerPaused(nextPaused);
+    if (nextStatus) {
+      onStatusChange(nextStatus);
+    } else if (status) {
+      onStatusChange({ ...status, paused: nextPaused });
+    }
+  };
+
   return (
     <div className="flex-1 min-h-0 overflow-y-auto">
-      <div className="max-w-4xl mx-auto px-8 py-6 space-y-6">
+      <div className="max-w-4xl mx-auto px-8 pt-2 pb-8 space-y-6">
+        <header className="flex items-center justify-between gap-4 pb-4 border-b border-neutral-200/70 dark:border-neutral-800">
+          <div className="flex items-center gap-3.5 min-w-0">
+            <div className="w-11 h-11 rounded-2xl bg-neutral-900 dark:bg-neutral-100 text-white dark:text-neutral-900 flex items-center justify-center shadow-xs shrink-0">
+              <svg viewBox="0 0 32 32" className="w-6 h-6" fill="none">
+                <circle cx="16" cy="16" r="10.5" stroke="currentColor" strokeWidth="2.5" strokeDasharray="13.5 3" strokeLinecap="round" />
+                <circle cx="16" cy="16" r="3.2" fill="#2383E2" />
+              </svg>
+            </div>
+            <div className="min-w-0">
+              <h1 className="text-[22px] font-semibold tracking-tight leading-tight text-neutral-900 dark:text-neutral-50">
+                KeyRing
+              </h1>
+              <p className="text-[12.5px] text-neutral-500 dark:text-neutral-400 truncate mt-0.5">
+                上下文感知桌面圆环快捷启动器
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0">
+            <span
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[12px] font-medium border ${
+                listenerOk
+                  ? 'bg-emerald-50 border-emerald-200/80 text-emerald-700 dark:bg-emerald-950/40 dark:border-emerald-900/60 dark:text-emerald-300'
+                  : status?.paused
+                    ? 'bg-amber-50 border-amber-200/80 text-amber-700 dark:bg-amber-950/40 dark:border-amber-900/60 dark:text-amber-300'
+                    : 'bg-neutral-100 border-neutral-200/80 text-neutral-600 dark:bg-neutral-800 dark:border-neutral-700 dark:text-neutral-300'
+              }`}
+            >
+              <span
+                className={`w-1.5 h-1.5 rounded-full ${
+                  listenerOk
+                    ? 'bg-emerald-500'
+                    : status?.paused
+                      ? 'bg-amber-500'
+                      : 'bg-neutral-400'
+                }`}
+              />
+              {status?.paused
+                ? '监听已暂停'
+                : listenerOk
+                  ? '正在监听'
+                  : needsPermission
+                    ? '等待授权'
+                    : '未就绪'}
+            </span>
+            {!needsPermission && (
+              <button
+                type="button"
+                onClick={() => void handleTogglePaused()}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[12px] font-medium border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800/80 text-neutral-700 dark:text-neutral-200 hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors whitespace-nowrap"
+              >
+                {status?.paused ? (
+                  <>
+                    <Play className="w-3 h-3" />
+                    恢复监听
+                  </>
+                ) : (
+                  <>
+                    <Pause className="w-3 h-3" />
+                    暂停监听
+                  </>
+                )}
+              </button>
+            )}
+          </div>
+        </header>
+
         {needsPermission && (
           <div className="rounded-2xl border border-amber-200 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-900/70 px-5 py-4">
             <div className="flex items-start gap-3">
@@ -268,25 +350,38 @@ export const ConfigPage: React.FC<ConfigPageProps> = ({
             </label>
           </div>
 
-          <div className="flex items-center gap-2 text-[13px]">
-            <span
-              className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-full ${
-                listenerOk
-                  ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300'
-                  : 'bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300'
-              }`}
-            >
-              <Check className="w-3.5 h-3.5" />
-              {status?.paused
-                ? '监听已暂停'
-                : listenerOk
-                  ? '正在监听双击'
-                  : needsPermission
-                    ? '等待系统授权'
-                    : '监听尚未就绪'}
-            </span>
-            {status?.platform === 'macos' && status.accessibilityTrusted && (
-              <span className="text-neutral-400">辅助功能已授权</span>
+          <div className="flex flex-wrap items-center justify-between gap-3 text-[13px]">
+            <div className="flex items-center gap-2.5">
+              <span
+                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg ${
+                  listenerOk
+                    ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300'
+                    : status?.paused
+                      ? 'bg-amber-50 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300'
+                      : 'bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300'
+                }`}
+              >
+                {status?.paused ? <Pause className="w-3.5 h-3.5" /> : <Check className="w-3.5 h-3.5" />}
+                {status?.paused
+                  ? '监听已暂停'
+                  : listenerOk
+                    ? '正在监听双击'
+                    : needsPermission
+                      ? '等待系统授权'
+                      : '监听尚未就绪'}
+              </span>
+              {status?.platform === 'macos' && status.accessibilityTrusted && (
+                <span className="text-neutral-400">辅助功能已授权</span>
+              )}
+            </div>
+            {!needsPermission && (
+              <button
+                type="button"
+                onClick={() => void handleTogglePaused()}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[12px] border border-neutral-200 dark:border-neutral-700 hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors"
+              >
+                {status?.paused ? '恢复监听' : '暂停监听'}
+              </button>
             )}
           </div>
 

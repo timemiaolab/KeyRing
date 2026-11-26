@@ -69,6 +69,10 @@ export async function requestAccessibilityPermission(): Promise<RuntimeStatus | 
   return invokeCommand<RuntimeStatus>('request_accessibility_permission');
 }
 
+export async function setListenerPaused(paused: boolean): Promise<RuntimeStatus | null> {
+  return invokeCommand<RuntimeStatus>('set_listener_paused', { paused });
+}
+
 export async function openAccessibilitySettings(): Promise<void> {
   await invokeCommand('open_accessibility_settings_cmd');
 }
@@ -111,10 +115,22 @@ export async function closeCurrentWindow(): Promise<void> {
   }
 }
 
-export async function listenNativeEvent(eventName: string, handler: () => void): Promise<() => void> {
+export async function emitNativeEvent(eventName: string, payload?: unknown): Promise<void> {
+  try {
+    const { emit } = await import('@tauri-apps/api/event');
+    await emit(eventName, payload);
+  } catch {
+    // not running inside Tauri
+  }
+}
+
+export async function listenNativeEvent<T = unknown>(
+  eventName: string,
+  handler: (payload: T) => void,
+): Promise<() => void> {
   try {
     const { listen } = await import('@tauri-apps/api/event');
-    const unlisten = await listen(eventName, () => handler());
+    const unlisten = await listen<T>(eventName, (event) => handler(event.payload));
     return unlisten;
   } catch {
     return () => undefined;

@@ -1,7 +1,7 @@
 use tauri::{
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager,
+    AppHandle, Emitter, Manager,
 };
 
 pub struct TrayLabels {
@@ -138,6 +138,35 @@ pub fn setup_tray(app: &AppHandle, locale: &str, autostart: bool) -> tauri::Resu
                         let _ = tray.set_menu(Some(menu));
                     }
                 }
+                let _ = app.emit("runtime-status-changed", ());
+            }
+            "tray_autostart" => {
+                use tauri_plugin_autostart::ManagerExt;
+                let state = app.state::<crate::AppStates>();
+                let updated = {
+                    let mut cfg = state.config.lock().unwrap();
+                    cfg.autostart = !cfg.autostart;
+                    cfg.clone()
+                };
+                if let Ok(serialized) = serde_json::to_string_pretty(&updated) {
+                    if let Some(parent) = state.config_path.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    let _ = std::fs::write(&state.config_path, serialized);
+                }
+                let autolaunch = app.autolaunch();
+                if updated.autostart {
+                    let _ = autolaunch.enable();
+                } else {
+                    let _ = autolaunch.disable();
+                }
+                let paused = state.hotkey_settings.lock().map(|s| s.paused).unwrap_or(false);
+                if let Some(tray) = app.tray_by_id("keyring-tray") {
+                    if let Ok(menu) = build_tray_menu(app, &updated.language, updated.autostart, paused) {
+                        let _ = tray.set_menu(Some(menu));
+                    }
+                }
+                let _ = app.emit("config-updated", updated);
             }
             "tray_quit" => {
                 app.exit(0);

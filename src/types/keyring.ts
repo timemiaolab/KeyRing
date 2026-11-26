@@ -55,6 +55,7 @@ export interface LibraryApp {
 
 export interface KeyRingConfig {
   language: SupportedLocale;
+  theme?: 'light' | 'dark';
   trigger: {
     modifier: ModifierKey;
     intervalMs: number;

@@ -2,6 +2,7 @@ import { ContextEntry, KeyRingConfig, LibraryApp, TerminalAdapter } from '../typ
 
 export const DEFAULT_CONFIG: KeyRingConfig = {
   language: 'zh-CN',
+  theme: 'light',
   trigger: {
     modifier: 'Command',
     intervalMs: 300,

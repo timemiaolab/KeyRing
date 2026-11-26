@@ -222,23 +222,145 @@ pub fn build_ide_invocations(
     }
 }
 
+pub fn build_macos_open_args(
+    kind: IdeKind,
+    dirs: &[String],
+    files: &[String],
+) -> Vec<Vec<String>> {
+    let mut invocations = Vec::new();
+    match kind {
+        IdeKind::VsCode => {
+            if !dirs.is_empty() {
+                let mut args = dirs.to_vec();
+                args.push("--args".to_string());
+                args.push("--new-window".to_string());
+                invocations.push(args);
+            }
+            if !files.is_empty() {
+                invocations.push(files.to_vec());
+            }
+            if invocations.is_empty() {
+                invocations.push(Vec::new());
+            }
+        }
+        IdeKind::Cursor => {
+            if !dirs.is_empty() {
+                let mut args = dirs.to_vec();
+                args.push("--args".to_string());
+                args.push("--classic".to_string());
+                args.push("--new-window".to_string());
+                invocations.push(args);
+            }
+            if !files.is_empty() {
+                let mut args = files.to_vec();
+                args.push("--args".to_string());
+                args.push("--classic".to_string());
+                invocations.push(args);
+            }
+            if invocations.is_empty() {
+                invocations.push(vec!["--args".to_string(), "--classic".to_string()]);
+            }
+        }
+        IdeKind::Generic => {
+            let mut combined = dirs.to_vec();
+            combined.extend(files.iter().cloned());
+            invocations.push(combined);
+        }
+    }
+    invocations
+}
+
 #[cfg(target_os = "macos")]
-fn resolve_macos_ide_binary(exec_path: &str, kind: IdeKind) -> Option<PathBuf> {
-    let app_path = Path::new(exec_path);
-    let candidates: [&str; 2] = match kind {
-        IdeKind::Cursor => [
-            "Contents/MacOS/Cursor",
-            "Contents/Resources/app/bin/cursor",
-        ],
-        IdeKind::VsCode => [
-            "Contents/Resources/app/bin/code",
-            "Contents/MacOS/Electron",
-        ],
-        IdeKind::Generic => return None,
+fn resolve_macos_app_bundle(exec_path: &str, kind: IdeKind) -> Option<PathBuf> {
+    let trimmed = exec_path.trim();
+    if !trimmed.is_empty() {
+        let configured = PathBuf::from(trimmed);
+        if configured.exists() {
+            return Some(configured);
+        }
+    }
+
+    let bundle_names: &[&str] = match kind {
+        IdeKind::VsCode => &["Visual Studio Code.app", "Visual Studio Code - Insiders.app"],
+        IdeKind::Cursor => &["Cursor.app"],
+        IdeKind::Generic => &[],
     };
 
-    for rel in candidates {
-        let candidate = app_path.join(rel);
+    for name in bundle_names {
+        let system_app = Path::new("/Applications").join(name);
+        if system_app.exists() {
+            return Some(system_app);
+        }
+        if let Some(home) = dirs::home_dir() {
+            let user_app = home.join("Applications").join(name);
+            if user_app.exists() {
+                return Some(user_app);
+            }
+        }
+    }
+
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn macos_bundle_ids(kind: IdeKind) -> &'static [&'static str] {
+    match kind {
+        IdeKind::VsCode => &["com.microsoft.VSCode", "com.microsoft.VSCodeInsiders"],
+        IdeKind::Cursor => &["com.todesktop.230313mzl4w4u92"],
+        IdeKind::Generic => &[],
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn run_macos_open(bundle_path: Option<&Path>, bundle_ids: &[&str], args: &[String]) -> Result<(), String> {
+    use std::process::Stdio;
+
+    if let Some(path) = bundle_path {
+        let output = Command::new("/usr/bin/open")
+            .arg("-a")
+            .arg(path)
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|e| e.to_string())?;
+        if output.status.success() {
+            return Ok(());
+        }
+    }
+
+    let mut last_err = String::new();
+    for bundle_id in bundle_ids {
+        let output = Command::new("/usr/bin/open")
+            .arg("-b")
+            .arg(bundle_id)
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|e| e.to_string())?;
+        if output.status.success() {
+            return Ok(());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if !stderr.is_empty() {
+            last_err = stderr;
+        }
+    }
+
+    if last_err.is_empty() {
+        Err("无法通过 macOS LaunchServices 启动应用".to_string())
+    } else {
+        Err(last_err)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn resolve_macos_cursor_binary(exec_path: &str, bundle: Option<&Path>) -> Option<PathBuf> {
+    let base = bundle.unwrap_or_else(|| Path::new(exec_path));
+    for rel in [
+        "Contents/MacOS/Cursor",
+        "Contents/Resources/app/bin/cursor",
+    ] {
+        let candidate = base.join(rel);
         if candidate.is_file() {
             return Some(candidate);
         }
@@ -276,29 +398,36 @@ pub fn execute_launch_app(
                 files.push(target.clone());
             }
         }
-        let invocations = build_ide_invocations(kind, &dirs, &files);
 
         #[cfg(target_os = "macos")]
         {
-            if let Some(bin) = resolve_macos_ide_binary(exec_path, kind) {
-                for args in &invocations {
-                    spawn_detached(&bin, args)?;
+            let bundle = resolve_macos_app_bundle(exec_path, kind);
+            if kind == IdeKind::Cursor {
+                if let Some(bin) = resolve_macos_cursor_binary(exec_path, bundle.as_deref()) {
+                    let invocations = build_ide_invocations(kind, &dirs, &files);
+                    for args in &invocations {
+                        spawn_detached(&bin, args)?;
+                    }
+                    return Ok(());
                 }
-                return Ok(());
             }
-            for args in &invocations {
-                let mut cmd = Command::new("open");
-                cmd.arg("-a").arg(exec_path);
-                if !args.is_empty() {
-                    cmd.arg("--args").args(args);
-                }
-                cmd.spawn().map_err(|e| e.to_string())?;
+
+            let open_invocations = build_macos_open_args(kind, &dirs, &files);
+            let fallback_path = if bundle.is_none() && !exec_path.trim().is_empty() {
+                Some(PathBuf::from(exec_path))
+            } else {
+                None
+            };
+            let target_bundle = bundle.as_deref().or(fallback_path.as_deref());
+            for args in &open_invocations {
+                run_macos_open(target_bundle, macos_bundle_ids(kind), args)?;
             }
             return Ok(());
         }
 
         #[cfg(not(target_os = "macos"))]
         {
+            let invocations = build_ide_invocations(kind, &dirs, &files);
             let bin = Path::new(exec_path);
             for args in &invocations {
                 spawn_detached(bin, args)?;
@@ -309,7 +438,7 @@ pub fn execute_launch_app(
 
     #[cfg(target_os = "macos")]
     {
-        let mut cmd = Command::new("open");
+        let mut cmd = Command::new("/usr/bin/open");
         cmd.arg("-a").arg(exec_path);
         if !targets.is_empty() {
             cmd.args(&targets);
@@ -393,6 +522,22 @@ mod tests {
         );
 
         let file_only = build_ide_invocations(IdeKind::VsCode, &[], &["/tmp/a.ts".into()]);
+        assert_eq!(file_only, vec![vec!["/tmp/a.ts".to_string()]]);
+    }
+
+    #[test]
+    fn macos_open_places_targets_before_args_for_vscode() {
+        let dir_only = build_macos_open_args(IdeKind::VsCode, &["/tmp/project".into()], &[]);
+        assert_eq!(
+            dir_only,
+            vec![vec![
+                "/tmp/project".to_string(),
+                "--args".to_string(),
+                "--new-window".to_string(),
+            ]]
+        );
+
+        let file_only = build_macos_open_args(IdeKind::VsCode, &[], &["/tmp/a.ts".into()]);
         assert_eq!(file_only, vec![vec!["/tmp/a.ts".to_string()]]);
     }
 }

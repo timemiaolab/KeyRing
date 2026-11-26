@@ -69,6 +69,8 @@ pub struct UiConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KeyRingConfig {
     pub language: String,
+    #[serde(default = "default_theme")]
+    pub theme: String,
     pub trigger: TriggerConfig,
     pub ui: UiConfig,
     pub autostart: bool,
@@ -84,9 +86,14 @@ fn default_terminal() -> String {
     "Terminal".into()
 }
 
+fn default_theme() -> String {
+    "light".into()
+}
+
 fn default_config() -> KeyRingConfig {
     KeyRingConfig {
         language: "zh-CN".into(),
+        theme: "light".into(),
         trigger: TriggerConfig {
             modifier: "Command".into(),
             interval_ms: 300,
@@ -185,6 +192,16 @@ fn save_config(
         hk.interval_ms = next_config.trigger.interval_ms;
     }
 
+    {
+        use tauri_plugin_autostart::ManagerExt;
+        let autolaunch = app.autolaunch();
+        if next_config.autostart {
+            let _ = autolaunch.enable();
+        } else {
+            let _ = autolaunch.disable();
+        }
+    }
+
     if let Some(tray) = app.tray_by_id("keyring-tray") {
         let paused = state
             .hotkey_settings
@@ -266,6 +283,26 @@ fn get_runtime_status(state: State<AppStates>) -> RuntimeStatus {
         last_placement_message: placement.as_ref().and_then(|item| item.message.clone()),
         last_placement_clamp: placement.as_ref().and_then(|item| item.clamp.clone()),
     }
+}
+
+#[tauri::command]
+fn set_listener_paused(
+    app: AppHandle,
+    state: State<AppStates>,
+    paused: bool,
+) -> RuntimeStatus {
+    if let Ok(mut hk) = state.hotkey_settings.lock() {
+        hk.paused = paused;
+    }
+    if let Some(tray) = app.tray_by_id("keyring-tray") {
+        if let Ok(cfg) = state.config.lock() {
+            if let Ok(menu) = tray::build_tray_menu(&app, &cfg.language, cfg.autostart, paused) {
+                let _ = tray.set_menu(Some(menu));
+            }
+        }
+    }
+    let _ = app.emit("runtime-status-changed", ());
+    get_runtime_status(state)
 }
 
 #[tauri::command]
@@ -510,6 +547,7 @@ pub fn run() {
             hide_pie_window,
             execute_slot,
             get_runtime_status,
+            set_listener_paused,
             request_accessibility_permission,
             open_accessibility_settings_cmd
         ])

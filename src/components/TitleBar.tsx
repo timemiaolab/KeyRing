@@ -9,11 +9,10 @@ import {
 } from '../tauriBridge';
 
 interface TitleBarProps {
-  title?: string;
   platform?: string | null;
 }
 
-export const TitleBar: React.FC<TitleBarProps> = ({ title = 'KeyRing', platform }) => {
+export const TitleBar: React.FC<TitleBarProps> = ({ platform }) => {
   const desktopPlatform = detectDesktopPlatform(platform);
   const isMac = desktopPlatform === 'macos';
   const [isMaximized, setIsMaximized] = useState(false);
@@ -44,7 +43,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({ title = 'KeyRing', platform 
       <div
         data-tauri-drag-region
         onDoubleClick={handleToggleMaximize}
-        className="h-10 shrink-0 grid grid-cols-[1fr_auto_1fr] items-center px-3.5 border-b border-neutral-200/80 dark:border-neutral-800 bg-white dark:bg-[#1F1F1F] select-none"
+        className="h-9 shrink-0 flex items-center px-3.5 bg-white dark:bg-[#1F1F1F] select-none"
       >
         {/* macOS traffic lights on the left: Close, Minimize, Zoom/Fullscreen */}
         <div
@@ -111,14 +110,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({ title = 'KeyRing', platform 
           </div>
         </div>
 
-        <span
-          data-tauri-drag-region
-          className="text-[12.5px] font-medium text-neutral-700 dark:text-neutral-200 truncate px-2"
-        >
-          {title}
-        </span>
-
-        <div data-tauri-drag-region className="h-full" />
+        <div data-tauri-drag-region className="flex-1 h-full" />
       </div>
     );
   }
@@ -127,20 +119,13 @@ export const TitleBar: React.FC<TitleBarProps> = ({ title = 'KeyRing', platform 
     <div
       data-tauri-drag-region
       onDoubleClick={handleToggleMaximize}
-      className="h-10 shrink-0 flex items-center pl-3.5 pr-1 border-b border-neutral-200/80 dark:border-neutral-800 bg-white dark:bg-[#1F1F1F] select-none"
+      className="h-9 shrink-0 flex items-center bg-white dark:bg-[#1F1F1F] select-none"
     >
-      <div data-tauri-drag-region className="flex-1 flex items-center min-w-0">
-        <span
-          data-tauri-drag-region
-          className="text-[12.5px] font-medium text-neutral-800 dark:text-neutral-100 truncate"
-        >
-          {title}
-        </span>
-      </div>
+      <div data-tauri-drag-region className="flex-1 h-full" />
 
       {/* Windows / Linux window controls on the right: Minimize, Maximize/Restore, Close */}
       <div
-        className="flex items-center h-full"
+        className="flex items-center h-full pr-0.5"
         onDoubleClick={(e) => e.stopPropagation()}
       >
         <button
@@ -149,7 +134,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({ title = 'KeyRing', platform 
           title="最小化"
           onMouseDown={(e) => e.stopPropagation()}
           onClick={() => void minimizeCurrentWindow()}
-          className="w-9 h-full flex items-center justify-center text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800 hover:text-neutral-800 dark:hover:text-neutral-100 transition-colors"
+          className="w-10 h-full flex items-center justify-center text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800 hover:text-neutral-800 dark:hover:text-neutral-100 transition-colors"
         >
           <Minus className="w-3.5 h-3.5" />
         </button>
@@ -159,7 +144,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({ title = 'KeyRing', platform 
           title={isMaximized ? '还原' : '最大化'}
           onMouseDown={(e) => e.stopPropagation()}
           onClick={handleToggleMaximize}
-          className="w-9 h-full flex items-center justify-center text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800 hover:text-neutral-800 dark:hover:text-neutral-100 transition-colors"
+          className="w-10 h-full flex items-center justify-center text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800 hover:text-neutral-800 dark:hover:text-neutral-100 transition-colors"
         >
           {isMaximized ? (
             <Copy className="w-3 h-3 -scale-x-100" />
@@ -173,7 +158,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({ title = 'KeyRing', platform 
           title="关闭"
           onMouseDown={(e) => e.stopPropagation()}
           onClick={() => void closeCurrentWindow()}
-          className="w-9 h-full flex items-center justify-center text-neutral-500 hover:bg-[#E81123] hover:text-white transition-colors"
+          className="w-10 h-full flex items-center justify-center text-neutral-500 hover:bg-[#E81123] hover:text-white transition-colors"
         >
           <X className="w-3.5 h-3.5" />
         </button>
