@@ -516,11 +516,15 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building KeyRing");
 
+    #[cfg(target_os = "macos")]
     app.run(|app_handle, event| {
         if let tauri::RunEvent::Reopen { .. } = event {
             show_config_window(app_handle);
         }
     });
+
+    #[cfg(not(target_os = "macos"))]
+    app.run(|_app_handle, _event| {});
 }
 
 #[cfg(test)]
