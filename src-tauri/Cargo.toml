@@ -1,6 +1,6 @@
 [package]
 name = "keyring"
-version = "0.1.4"
+version = "0.1.5"
 description = "Context-aware cross-platform radial Pie Menu launcher"
 authors = ["KeyRing"]
 edition = "2021"
